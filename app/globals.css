@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global theme */
+:root { color-scheme: dark; }
+html, body {
+  @apply bg-neutral-950 text-neutral-100 font-sans;
+  margin: 0;
+  padding: 0;
+}
+
+/* Monospaced ticker symbols */
+.symbol {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  letter-spacing: 0.5px;
+}
+
+/* Chart tweaks */
+.chart-container canvas {
+  image-rendering: pixelated;
+}
+
+/* Card hover */
+.card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+}
+
+/* --- Polished background + glass shells --- */
+:root{
+  --bg0:#05070d;
+  --bg1:#0a0f1d;
+  --bg2:#0e1627;
+  --card:#0c111b;
+  --ring:#ffd54a;
+}
+
+html, body { background: var(--bg0); }
+
+/* full-app background: soft vignette + spotlight + faint grid */
+.bg-app {
+  position: relative;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(50,120,255,0.08), transparent 60%),
+    radial-gradient(1000px 800px at 100% 0%, rgba(255,200,60,0.08), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg0) 60%, #04060c);
+  isolation: isolate;
+}
+.bg-app::after {
+  /* subtle grid */
+  content: "";
+  position: fixed; inset: 0;
+  background:
+    linear-gradient(to right, rgba(255,255,255,0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.035) 1px, transparent 1px);
+  background-size: 48px 48px, 48px 48px;
+  mask-image: radial-gradient(1200px 800px at 50% 20%, black, transparent 75%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* glassy section wrapper */
+.shell {
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow:
+    0 10px 30px rgba(0,0,0,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+/* chic heading underline accent */
+.heading-accent {
+  position: relative;
+  display: inline-block;
+  padding-bottom: .35rem;
+}
+.heading-accent::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #5eead4, #fde047);
+  border-radius: 999px;
+  opacity: .8;
+}
+
+/* nicer primary button (keeps Tailwind classes usable) */
+.btn-primary {
+  background: linear-gradient(180deg, #2563eb, #1e40af);
+  border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 6px 20px rgba(37,99,235,.35);
+}
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:disabled { opacity: .6; box-shadow: none; }
+
+/* subtle highlight ring for top cards */
+.card-highlight {
+  box-shadow: 0 0 0 1px rgba(253, 224, 71, .35), 0 12px 40px rgba(253, 224, 71, .08);
+  border-color: rgba(253, 224, 71, .35) !important;
+}
