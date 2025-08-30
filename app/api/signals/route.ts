@@ -1,63 +1,112 @@
 // app/api/signals/route.ts
 import { NextResponse } from "next/server";
 
-export const runtime = "edge";            // Workers-compatible
+export const runtime = "edge";            // ✅ works on Cloudflare Pages
 export const dynamic = "force-dynamic";
 
-// --- Configure these for your repo/workflow ---
-const OWNER = "bradykoenig";
-const REPO = "tradingferda";
-const WORKFLOW_FILE = "update-signals.yml"; // .github/workflows/update-signals.yml
-const REF = "main";                         // branch to run workflow on
-
-type DispatchBody = {
-  // Optional: allow passing inputs: { force?: string; note?: string; }
-  inputs?: Record<string, string>;
+type Env = {
+  GITHUB_PAT?: string;
+  GITHUB_OWNER?: string;
+  GITHUB_REPO?: string;
+  GITHUB_WORKFLOW_FILE?: string;  // e.g. "update-signals.yml"
+  GITHUB_REF?: string;            // e.g. "main"
 };
 
-export async function GET(): Promise<Response> {
-  return NextResponse.json({ ok: true, hosting: "cloudflare-pages", action: WORKFLOW_FILE });
+function readEnv(): Required<Env> {
+  const {
+    GITHUB_PAT,
+    GITHUB_OWNER,
+    GITHUB_REPO,
+    GITHUB_WORKFLOW_FILE,
+    GITHUB_REF,
+  } = process.env as Env;
+
+  const missing: string[] = [];
+  if (!GITHUB_PAT) missing.push("GITHUB_PAT");
+  if (!GITHUB_OWNER) missing.push("GITHUB_OWNER");
+  if (!GITHUB_REPO) missing.push("GITHUB_REPO");
+  if (!GITHUB_WORKFLOW_FILE) missing.push("GITHUB_WORKFLOW_FILE");
+
+  if (missing.length) {
+    // We still allow this handler to run locally without secrets,
+    // but on Cloudflare you should set these in Pages → Settings → Environment variables (production & preview).
+    throw new Error(
+      `Missing required env var(s): ${missing.join(
+        ", "
+      )}. Set them in Cloudflare Pages → Settings → Environment Variables.`
+    );
+  }
+
+  return {
+    GITHUB_PAT,
+    GITHUB_OWNER,
+    GITHUB_REPO,
+    GITHUB_WORKFLOW_FILE,
+    GITHUB_REF: GITHUB_REF || "main",
+  };
 }
 
-export async function POST(req: Request): Promise<Response> {
-  const token = process.env.GITHUB_PAT; // add in Cloudflare Pages → Settings → Environment Variables
-  if (!token) {
-    return NextResponse.json(
-      { success: false, error: "Server missing GITHUB_PAT env var" },
-      { status: 500 }
-    );
-  }
+async function triggerGithubWorkflow(env: Required<Env>) {
+  const { GITHUB_PAT, GITHUB_OWNER, GITHUB_REPO, GITHUB_WORKFLOW_FILE, GITHUB_REF } = env;
 
-  let inputs: Record<string, string> | undefined = undefined;
-  try {
-    const body = (await req.json().catch(() => ({}))) as DispatchBody;
-    if (body && body.inputs && typeof body.inputs === "object") {
-      // GitHub Actions only accepts string inputs
-      inputs = Object.fromEntries(
-        Object.entries(body.inputs).map(([k, v]) => [k, String(v)])
-      );
-    }
-  } catch {
-    // ignore body parse errors; inputs remain undefined
-  }
+  const url = `https://api.github.com/repos/${encodeURIComponent(
+    GITHUB_OWNER
+  )}/${encodeURIComponent(GITHUB_REPO)}/actions/workflows/${encodeURIComponent(
+    GITHUB_WORKFLOW_FILE
+  )}/dispatches`;
 
-  const ghUrl = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
-  const ghRes = await fetch(ghUrl, {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      // Either "token" or "Bearer" works for classic PATs
+      Authorization: `token ${GITHUB_PAT}`,
       Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      // Optional but nice to have:
+      "User-Agent": "schlima-trading-refresh",
     },
-    body: JSON.stringify({ ref: REF, inputs }),
+    body: JSON.stringify({
+      ref: GITHUB_REF,
+      // inputs are optional; add anything your workflow might read
+      inputs: {
+        reason: "manual-refresh",
+        ts: Date.now().toString(),
+      },
+    }),
   });
 
-  if (!ghRes.ok) {
-    const text = await ghRes.text().catch(() => "");
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `GitHub dispatch failed: ${res.status} ${res.statusText} ${text ? `— ${text.slice(0, 500)}` : ""
+      }`
+    );
+  }
+}
+
+export async function GET() {
+  // Simple health check
+  return NextResponse.json({ ok: true });
+}
+
+export async function POST(_req: Request): Promise<Response> {
+  try {
+    const env = readEnv();
+    await triggerGithubWorkflow(env);
+    // Return a friendly, quick response; the GH Action will update today.json and push
+    return NextResponse.json({
+      success: true,
+      message: "Workflow dispatched. Signals will update when the action finishes.",
+    });
+  } catch (err: any) {
+    // Surface a concise error message to the client
     return NextResponse.json(
-      { success: false, error: `GitHub dispatch failed: ${ghRes.status} ${text.slice(0, 500)}` },
+      {
+        success: false,
+        error: err?.message || "Failed to dispatch workflow",
+      },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({ success: true, dispatched: { workflow: WORKFLOW_FILE, ref: REF } });
 }
