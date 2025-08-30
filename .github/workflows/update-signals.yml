@@ -2,35 +2,52 @@ name: Update Trading Signals
 
 on:
   schedule:
-    # Runs every day at 6am UTC (adjust if you want)
+    # Runs every day at 06:00 UTC (adjust as you like)
     - cron: "0 6 * * *"
-  workflow_dispatch: # allow manual trigger too
+  workflow_dispatch: {}  # allow manual/API dispatch
+
+permissions:
+  contents: write   # needed to push updated JSON back to repo
+
+concurrency:
+  group: update-signals
+  cancel-in-progress: false
 
 jobs:
   build-signals:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # ensure we can commit/push cleanly
 
-      - name: Set up Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run signal builder
-        run: python scripts/build_signals.py
-
-      - name: Commit updated JSON
+      - name: Build signals (runs scripts/build_signals.py)
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          python scripts/build_signals.py
+          echo "Preview output:"
+          head -n 40 public/data/today.json || true
+
+      - name: Commit and push updated JSON
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add public/data/today.json public/ohlc/*.json
-          git commit -m "Update signals [skip ci]" || echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(data): update signals [skip ci]"
           git push
