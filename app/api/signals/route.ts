@@ -1,25 +1,24 @@
-// app/api/signals/route.ts
 import { NextResponse } from "next/server";
 
-export const runtime = "edge";            // ✅ works on Cloudflare Pages
+export const runtime = "edge"; 
 export const dynamic = "force-dynamic";
 
 type Env = {
-  GITHUB_PAT?: string;
-  GITHUB_OWNER?: string;
-  GITHUB_REPO?: string;
-  GITHUB_WORKFLOW_FILE?: string;  // e.g. "update-signals.yml"
-  GITHUB_REF?: string;            // e.g. "main"
+  GITHUB_PAT: string;
+  GITHUB_OWNER: string;
+  GITHUB_REPO: string;
+  GITHUB_WORKFLOW_FILE: string;
+  GITHUB_REF: string;
 };
 
-function readEnv(): Required<Env> {
+function readEnv(): Env {
   const {
     GITHUB_PAT,
     GITHUB_OWNER,
     GITHUB_REPO,
     GITHUB_WORKFLOW_FILE,
     GITHUB_REF,
-  } = process.env as Env;
+  } = process.env;
 
   const missing: string[] = [];
   if (!GITHUB_PAT) missing.push("GITHUB_PAT");
@@ -28,25 +27,21 @@ function readEnv(): Required<Env> {
   if (!GITHUB_WORKFLOW_FILE) missing.push("GITHUB_WORKFLOW_FILE");
 
   if (missing.length) {
-    // We still allow this handler to run locally without secrets,
-    // but on Cloudflare you should set these in Pages → Settings → Environment variables (production & preview).
     throw new Error(
-      `Missing required env var(s): ${missing.join(
-        ", "
-      )}. Set them in Cloudflare Pages → Settings → Environment Variables.`
+      `Missing required env var(s): ${missing.join(", ")}`
     );
   }
 
   return {
-    GITHUB_PAT,
-    GITHUB_OWNER,
-    GITHUB_REPO,
-    GITHUB_WORKFLOW_FILE,
+    GITHUB_PAT: GITHUB_PAT!,
+    GITHUB_OWNER: GITHUB_OWNER!,
+    GITHUB_REPO: GITHUB_REPO!,
+    GITHUB_WORKFLOW_FILE: GITHUB_WORKFLOW_FILE!,
     GITHUB_REF: GITHUB_REF || "main",
   };
 }
 
-async function triggerGithubWorkflow(env: Required<Env>) {
+async function triggerGithubWorkflow(env: Env) {
   const { GITHUB_PAT, GITHUB_OWNER, GITHUB_REPO, GITHUB_WORKFLOW_FILE, GITHUB_REF } = env;
 
   const url = `https://api.github.com/repos/${encodeURIComponent(
@@ -58,54 +53,35 @@ async function triggerGithubWorkflow(env: Required<Env>) {
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      // Either "token" or "Bearer" works for classic PATs
       Authorization: `token ${GITHUB_PAT}`,
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      // Optional but nice to have:
       "User-Agent": "schlima-trading-refresh",
     },
-    body: JSON.stringify({
-      ref: GITHUB_REF,
-      // inputs are optional; add anything your workflow might read
-      inputs: {
-        reason: "manual-refresh",
-        ts: Date.now().toString(),
-      },
-    }),
+    body: JSON.stringify({ ref: GITHUB_REF }),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `GitHub dispatch failed: ${res.status} ${res.statusText} ${text ? `— ${text.slice(0, 500)}` : ""
-      }`
-    );
+    throw new Error(`GitHub dispatch failed: ${res.status} ${text}`);
   }
 }
 
 export async function GET() {
-  // Simple health check
   return NextResponse.json({ ok: true });
 }
 
-export async function POST(_req: Request): Promise<Response> {
+export async function POST() {
   try {
     const env = readEnv();
     await triggerGithubWorkflow(env);
-    // Return a friendly, quick response; the GH Action will update today.json and push
     return NextResponse.json({
       success: true,
-      message: "Workflow dispatched. Signals will update when the action finishes.",
+      message: "Workflow dispatched. Signals will update soon.",
     });
   } catch (err: any) {
-    // Surface a concise error message to the client
     return NextResponse.json(
-      {
-        success: false,
-        error: err?.message || "Failed to dispatch workflow",
-      },
+      { success: false, error: err?.message || "Failed to dispatch workflow" },
       { status: 500 }
     );
   }
