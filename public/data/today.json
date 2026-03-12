@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-03-11T07:05:31Z",
+  "generated_at_utc": "2026-03-12T07:06:49Z",
   "watchlist": [
     "spy.us",
     "qqq.us",
@@ -27,11 +27,11 @@
   "market_bias": {
     "score": -2,
     "bias": "bearish",
-    "spy_close": 677.18,
-    "spy_sma200": 657.34,
+    "spy_close": 676.33,
+    "spy_sma200": 657.81,
     "ema20_gt_ema50": false,
-    "rsi14": 43.41,
-    "roc20_pct": -2.42
+    "rsi14": 42.75,
+    "roc20_pct": -2.28
   },
   "ideas": [
     {
@@ -39,23 +39,9 @@
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 49.7,
-        "stop": 50.81,
-        "target": 47.7,
-        "rr": 1.8,
-        "reason": "Downtrend, breakdown of prior low.",
-        "direction": "bearish",
-        "horizon": "short"
-      }
-    },
-    {
-      "symbol": "XLY.US",
-      "plan": {
-        "strategy": "TrendPullbackShort",
-        "active": true,
-        "entry": 113.9,
-        "stop": 116.21,
-        "target": 109.74,
+        "entry": 49.17,
+        "stop": 50.29,
+        "target": 47.17,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -67,9 +53,9 @@
       "plan": {
         "strategy": "TrendPullbackLong",
         "active": true,
-        "entry": 56.51,
-        "stop": 55.3,
-        "target": 58.7,
+        "entry": 57.09,
+        "stop": 55.85,
+        "target": 59.33,
         "rr": 1.8,
         "reason": "Uptrend, breakout of prior high.",
         "direction": "bullish",
@@ -77,16 +63,16 @@
       }
     },
     {
-      "symbol": "XLU.US",
+      "symbol": "XLY.US",
       "plan": {
-        "strategy": "TrendPullbackLong",
+        "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 47.08,
-        "stop": 46.36,
-        "target": 48.39,
+        "entry": 113.52,
+        "stop": 115.88,
+        "target": 109.27,
         "rr": 1.8,
-        "reason": "Uptrend, breakout of prior high.",
-        "direction": "bullish",
+        "reason": "Downtrend, breakdown of prior low.",
+        "direction": "bearish",
         "horizon": "short"
       }
     },
@@ -95,9 +81,9 @@
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 402.88,
-        "stop": 412.07,
-        "target": 386.35,
+        "entry": 401.54,
+        "stop": 410.7,
+        "target": 385.05,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -105,13 +91,27 @@
       }
     },
     {
-      "symbol": "XLC.US",
+      "symbol": "AMZN.US",
+      "plan": {
+        "strategy": "TrendPullbackShort",
+        "active": true,
+        "entry": 211.3,
+        "stop": 217.32,
+        "target": 200.46,
+        "rr": 1.8,
+        "reason": "Downtrend, breakdown of prior low.",
+        "direction": "bearish",
+        "horizon": "short"
+      }
+    },
+    {
+      "symbol": "XLU.US",
       "plan": {
         "strategy": "TrendPullbackLong",
         "active": true,
-        "entry": 118.16,
-        "stop": 116.51,
-        "target": 121.14,
+        "entry": 46.61,
+        "stop": 45.88,
+        "target": 47.92,
         "rr": 1.8,
         "reason": "Uptrend, breakout of prior high.",
         "direction": "bullish",
@@ -123,9 +123,9 @@
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 648.95,
-        "stop": 667.36,
-        "target": 615.82,
+        "entry": 648.31,
+        "stop": 666.74,
+        "target": 615.14,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -133,13 +133,13 @@
       }
     },
     {
-      "symbol": "TSLA.US",
+      "symbol": "SPY.US",
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 398.14,
-        "stop": 411.4,
-        "target": 374.27,
+        "entry": 673.29,
+        "stop": 683.17,
+        "target": 655.5,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -151,9 +151,9 @@
       "plan": {
         "strategy": "TrendPullbackLong",
         "active": true,
-        "entry": 353.19,
-        "stop": 338.73,
-        "target": 379.23,
+        "entry": 345.86,
+        "stop": 331.48,
+        "target": 371.75,
         "rr": 1.8,
         "reason": "Uptrend, breakout of prior high.",
         "direction": "bullish",
@@ -161,13 +161,13 @@
       }
     },
     {
-      "symbol": "SPY.US",
+      "symbol": "AAPL.US",
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 674.71,
-        "stop": 684.45,
-        "target": 657.18,
+        "entry": 259.5,
+        "stop": 265.48,
+        "target": 248.73,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -179,9 +179,9 @@
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 305.26,
-        "stop": 313.1,
-        "target": 291.15,
+        "entry": 305.79,
+        "stop": 313.62,
+        "target": 291.7,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -189,13 +189,13 @@
       }
     },
     {
-      "symbol": "AAPL.US",
+      "symbol": "TSLA.US",
       "plan": {
         "strategy": "TrendPullbackShort",
         "active": true,
-        "entry": 256.9,
-        "stop": 263.02,
-        "target": 245.89,
+        "entry": 402.1,
+        "stop": 415.79,
+        "target": 377.46,
         "rr": 1.8,
         "reason": "Downtrend, breakdown of prior low.",
         "direction": "bearish",
@@ -207,9 +207,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 55.6,
-        "stop": 51.3,
-        "target": 64.21,
+        "entry": 56.98,
+        "stop": 52.68,
+        "target": 65.59,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
@@ -221,9 +221,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 306.87,
-        "stop": 270.58,
-        "target": 379.46,
+        "entry": 308.42,
+        "stop": 271.85,
+        "target": 381.56,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
@@ -235,9 +235,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 170.02,
-        "stop": 159.75,
-        "target": 190.56,
+        "entry": 169.49,
+        "stop": 159.22,
+        "target": 190.03,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
@@ -249,9 +249,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 46.56,
-        "stop": 43.77,
-        "target": 52.13,
+        "entry": 46.17,
+        "stop": 43.38,
+        "target": 51.76,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
@@ -263,23 +263,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 49.88,
-        "stop": 46.14,
-        "target": 57.36,
-        "rr": 2.0,
-        "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
-        "direction": "bullish",
-        "horizon": "long"
-      }
-    },
-    {
-      "symbol": "XLP.US",
-      "plan": {
-        "strategy": "WeeklyTrendLong",
-        "active": true,
-        "entry": 85.72,
-        "stop": 80.68,
-        "target": 95.8,
+        "entry": 49.84,
+        "stop": 46.1,
+        "target": 57.32,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
@@ -291,9 +277,9 @@
       "plan": {
         "strategy": "WeeklyTrendLong",
         "active": true,
-        "entry": 117.38,
-        "stop": 111.32,
-        "target": 129.49,
+        "entry": 117.0,
+        "stop": 110.94,
+        "target": 129.11,
         "rr": 2.0,
         "reason": "Weekly uptrend (close>SMA40, EMA10>EMA30, RSIw>55). Position trade.",
         "direction": "bullish",
