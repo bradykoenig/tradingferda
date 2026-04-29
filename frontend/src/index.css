@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-100 min-h-screen;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-zinc-950;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-zinc-700 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-600;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-zinc-900 border border-zinc-800 rounded-xl;
+  }
+
+  .btn-primary {
+    @apply bg-zinc-100 text-zinc-950 font-semibold px-6 py-3 rounded-lg hover:bg-white transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply text-zinc-400 hover:text-zinc-100 px-4 py-2 rounded-lg hover:bg-zinc-800 transition-colors duration-150;
+  }
+
+  .input-field {
+    @apply bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-500 rounded-lg px-4 py-3 w-full focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-colors duration-150;
+  }
+
+  .badge-green {
+    @apply inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-medium px-2 py-1 rounded-full;
+  }
+
+  .badge-red {
+    @apply inline-flex items-center gap-1 bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-medium px-2 py-1 rounded-full;
+  }
+
+  .badge-amber {
+    @apply inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs font-medium px-2 py-1 rounded-full;
+  }
+
+  .badge-zinc {
+    @apply inline-flex items-center gap-1 bg-zinc-800 text-zinc-400 border border-zinc-700 text-xs font-medium px-2 py-1 rounded-full;
+  }
+
+  .stat-value {
+    @apply font-mono text-2xl font-medium text-zinc-100;
+  }
+
+  .stat-label {
+    @apply text-xs uppercase tracking-widest text-zinc-500 font-medium;
+  }
+
+  .section-header {
+    @apply text-xs uppercase tracking-widest text-zinc-500 font-semibold mb-4;
+  }
+}
