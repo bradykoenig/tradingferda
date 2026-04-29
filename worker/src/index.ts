@@ -123,21 +123,25 @@ function ratingFromScore(score: number): string {
 }
 
 async function callClaude(prompt: string, apiKey: string): Promise<string> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 220,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  const data = await res.json() as { content?: { text: string }[] };
-  return data.content?.[0]?.text ?? '';
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 220,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    const data = await res.json() as { content?: { text: string }[] };
+    return data.content?.[0]?.text ?? '';
+  } catch {
+    return '';
+  }
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────────
@@ -238,6 +242,7 @@ export default {
       const authErr = await requireAuth(request, env, cors);
       if (authErr) return authErr;
       if (!env.FINNHUB_API_KEY) return json({ error: 'Stock API not configured' }, 503, cors);
+      try {
 
       const type = url.searchParams.get('type');
 
@@ -327,6 +332,9 @@ export default {
       }
 
       return json({ error: 'type must be longterm or daytrading' }, 400, cors);
+      } catch {
+        return json({ error: 'Failed to generate pick' }, 502, cors);
+      }
     }
 
     return new Response('Not found', { status: 404, headers: cors });
