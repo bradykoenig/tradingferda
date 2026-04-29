@@ -118,6 +118,25 @@ export async function generateDTPick(token: string): Promise<GeneratedDTPick> {
   return res.json() as Promise<GeneratedDTPick>;
 }
 
+export interface GameScore {
+  id: string;
+  sport_key: string;
+  sport_title: string;
+  commence_time: string;
+  completed: boolean;
+  home_team: string;
+  away_team: string;
+  scores: Array<{ name: string; score: string }> | null;
+}
+
+export async function fetchScores(token: string, sport: string): Promise<GameScore[]> {
+  const res = await fetch(`${API_BASE}/scores?sport=${encodeURIComponent(sport)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Failed to fetch scores');
+  return res.json() as Promise<GameScore[]>;
+}
+
 export async function fetchOdds(token: string, sport: string): Promise<GameOdds[]> {
   const res = await fetch(`${API_BASE}/odds?sport=${encodeURIComponent(sport)}`, {
     headers: { Authorization: `Bearer ${token}` },

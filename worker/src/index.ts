@@ -175,6 +175,24 @@ export default {
 
     // ── Odds ──────────────────────────────────────────────────────────────────
 
+    if (url.pathname === '/api/scores' && request.method === 'GET') {
+      const authErr = await requireAuth(request, env, cors);
+      if (authErr) return authErr;
+      if (!env.ODDS_API_KEY) return json({ error: 'Odds API not configured' }, 503, cors);
+      const sport = url.searchParams.get('sport') ?? 'basketball_nba';
+      const scoresUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/scores/`);
+      scoresUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
+      scoresUrl.searchParams.set('daysFrom', '3');
+      try {
+        const res = await fetch(scoresUrl.toString());
+        if (!res.ok) return json({ error: 'Scores API error' }, 502, cors);
+        const data = await res.json();
+        return new Response(JSON.stringify(data), { headers: { ...cors, 'Content-Type': 'application/json' } });
+      } catch {
+        return json({ error: 'Failed to fetch scores' }, 502, cors);
+      }
+    }
+
     if (url.pathname === '/api/odds' && request.method === 'GET') {
       const authErr = await requireAuth(request, env, cors);
       if (authErr) return authErr;
