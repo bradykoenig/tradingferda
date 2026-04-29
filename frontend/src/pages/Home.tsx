@@ -49,9 +49,6 @@ export default function Home() {
           </button>
         </div>
 
-        <p className="text-center text-xs text-zinc-700 mt-10 tracking-wide">
-          NO SETUP = NO TRADE · NO EDGE = NO BET
-        </p>
       </div>
     </div>
   );

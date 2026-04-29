@@ -1,256 +1,278 @@
 import { useState } from 'react';
-import { Search, TrendingUp, AlertCircle, CheckCircle, XCircle, MinusCircle, Info } from 'lucide-react';
+import { Search, TrendingUp, Sparkles, AlertCircle, ChevronUp, ChevronDown } from 'lucide-react';
+import { fetchStockMetrics, generateLTPick, StockData } from '../lib/api';
+import { useAuth } from '../hooks/useAuth';
 
-interface ScoreDimension {
-  label: string;
-  score: number;
-  commentary: string;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function scoreColor(s: number) {
+  return s >= 70 ? 'text-emerald-400' : s >= 50 ? 'text-amber-400' : 'text-red-400';
 }
 
-interface StockAnalysis {
-  ticker: string;
-  company: string;
-  sector: string;
-  rating: 'STRONG BUY' | 'WATCHLIST' | 'HOLD' | 'OVERVALUED' | 'RISKY' | 'PASS';
-  overallScore: number;
-  summary: string;
-  dimensions: ScoreDimension[];
+function scoreBarColor(s: number) {
+  return s >= 70 ? 'bg-emerald-500' : s >= 50 ? 'bg-amber-500' : 'bg-red-500';
 }
 
-const SAMPLE_DATA: Record<string, StockAnalysis> = {
-  AAPL: {
-    ticker: 'AAPL', company: 'Apple Inc.', sector: 'Technology',
-    rating: 'WATCHLIST', overallScore: 72,
-    summary: 'Apple has an exceptionally durable moat through its ecosystem and brand. Revenue growth has moderated but services segment continues expanding. Valuation is stretched at current levels — wait for a pullback.',
-    dimensions: [
-      { label: 'Moat', score: 95, commentary: 'Extremely durable ecosystem lock-in; switching costs are very high.' },
-      { label: 'Revenue Growth', score: 60, commentary: 'Growth has slowed to mid-single digits as hardware saturates.' },
-      { label: 'Earnings Growth', score: 70, commentary: 'EPS growth supported by buybacks; Services improving margins.' },
-      { label: 'Free Cash Flow', score: 92, commentary: 'FCF yield is exceptional. One of the strongest cash generators globally.' },
-      { label: 'Valuation', score: 40, commentary: 'Trading at ~28x forward earnings. Premium is justified but limits upside.' },
-      { label: 'Debt Level', score: 78, commentary: 'Leverage is manageable; strong balance sheet despite buyback program.' },
-      { label: 'Profit Margin', score: 88, commentary: 'Net margins ~25%. Services segment significantly expands profitability.' },
-      { label: 'Risk', score: 68, commentary: 'China concentration, regulatory scrutiny, and hardware dependence are key risks.' },
-    ],
-  },
-  MSFT: {
-    ticker: 'MSFT', company: 'Microsoft Corp.', sector: 'Technology',
-    rating: 'STRONG BUY', overallScore: 88,
-    summary: 'Microsoft is one of the strongest long-term compounders available. Azure growth, Office 365 pricing power, and AI integration create a formidable position. Valuation is full but justified by quality.',
-    dimensions: [
-      { label: 'Moat', score: 97, commentary: 'Enterprise lock-in across cloud, productivity, and developer tools is unparalleled.' },
-      { label: 'Revenue Growth', score: 82, commentary: 'Azure growing ~30% YoY. Total revenue growing 15-18%.' },
-      { label: 'Earnings Growth', score: 85, commentary: 'Consistent double-digit EPS growth. Margin expansion ongoing.' },
-      { label: 'Free Cash Flow', score: 91, commentary: 'FCF margin above 35%. Capital-light model at scale.' },
-      { label: 'Valuation', score: 55, commentary: 'Trading at ~33x forward earnings. Premium warranted given quality.' },
-      { label: 'Debt Level', score: 85, commentary: 'Net cash positive. Conservative balance sheet management.' },
-      { label: 'Profit Margin', score: 92, commentary: 'Operating margins ~45% and expanding with AI monetization.' },
-      { label: 'Risk', score: 82, commentary: 'Regulatory risk is the primary concern. Antitrust scrutiny globally.' },
-    ],
-  },
-  TSLA: {
-    ticker: 'TSLA', company: 'Tesla Inc.', sector: 'Automotive / Technology',
-    rating: 'RISKY', overallScore: 38,
-    summary: 'Tesla has first-mover advantages in EVs but faces intensifying competition, margin compression, and execution risk on new products. Valuation implies perfection across every future bet.',
-    dimensions: [
-      { label: 'Moat', score: 55, commentary: 'Brand and supercharger network are real but eroding as competitors invest heavily.' },
-      { label: 'Revenue Growth', score: 48, commentary: 'Growth has decelerated sharply as EV demand plateaus.' },
-      { label: 'Earnings Growth', score: 30, commentary: 'Earnings declining due to aggressive price cuts to maintain volume.' },
-      { label: 'Free Cash Flow', score: 42, commentary: 'FCF has compressed significantly. Heavy capex continues.' },
-      { label: 'Valuation', score: 15, commentary: 'Trading at 80x+ forward earnings. Priced for robotaxis, FSD, and Optimus — none certain.' },
-      { label: 'Debt Level', score: 72, commentary: 'Balance sheet is clean. Not a concern.' },
-      { label: 'Profit Margin', score: 38, commentary: 'Gross margins declining as ASP falls. Needs volume to compensate.' },
-      { label: 'Risk', score: 25, commentary: 'Elon distraction, competitive pressure from BYD, and macroeconomic sensitivity.' },
-    ],
-  },
-  META: {
-    ticker: 'META', company: 'Meta Platforms Inc.', sector: 'Technology',
-    rating: 'STRONG BUY', overallScore: 82,
-    summary: 'Meta has rebuilt its advertising engine with remarkable efficiency. Reality Labs losses remain high but core social platforms generate exceptional cash flow. Undervalued relative to quality.',
-    dimensions: [
-      { label: 'Moat', score: 88, commentary: 'Network effects across Facebook, Instagram, and WhatsApp are deeply entrenched.' },
-      { label: 'Revenue Growth', score: 80, commentary: 'Ad revenue regrowing 20%+ YoY after 2022 reset.' },
-      { label: 'Earnings Growth', score: 90, commentary: 'Year of Efficiency restructuring drove massive EPS expansion.' },
-      { label: 'Free Cash Flow', score: 85, commentary: 'FCF yield ~3-4% at current prices. Very strong for a growth company.' },
-      { label: 'Valuation', score: 72, commentary: 'Trading at ~22x forward earnings — reasonable given growth trajectory.' },
-      { label: 'Debt Level', score: 88, commentary: 'Net cash position. No leverage concerns.' },
-      { label: 'Profit Margin', score: 82, commentary: 'Operating margins recovered to ~40%. Structural improvement sustained.' },
-      { label: 'Risk', score: 60, commentary: 'Regulatory risk in EU/US, AI competition, Reality Labs ongoing losses.' },
-    ],
-  },
-};
-
-function ratingConfig(rating: StockAnalysis['rating']) {
-  const cfg = {
-    'STRONG BUY': { color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', icon: CheckCircle },
-    'WATCHLIST': { color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/20', icon: MinusCircle },
-    'HOLD': { color: 'text-zinc-400', bg: 'bg-zinc-800 border-zinc-700', icon: MinusCircle },
-    'OVERVALUED': { color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20', icon: AlertCircle },
-    'RISKY': { color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20', icon: XCircle },
-    'PASS': { color: 'text-zinc-500', bg: 'bg-zinc-800 border-zinc-700', icon: XCircle },
+function ratingStyle(r: string) {
+  const map: Record<string, string> = {
+    'STRONG BUY': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    'WATCHLIST':  'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    'HOLD':       'bg-zinc-800 text-zinc-400 border-zinc-700',
+    'OVERVALUED': 'bg-red-500/10 text-red-400 border-red-500/20',
+    'RISKY':      'bg-red-500/10 text-red-400 border-red-500/20',
+    'PASS':       'bg-zinc-800 text-zinc-600 border-zinc-700',
   };
-  return cfg[rating];
+  return map[r] ?? 'bg-zinc-800 text-zinc-400 border-zinc-700';
 }
 
-function scoreColor(score: number) {
-  if (score >= 75) return 'text-emerald-400';
-  if (score >= 50) return 'text-amber-400';
-  return 'text-red-400';
+function fmt$(n: number | null | undefined) {
+  if (n == null) return '—';
+  return `$${n.toFixed(2)}`;
 }
 
-function scoreBarColor(score: number) {
-  if (score >= 75) return 'bg-emerald-500';
-  if (score >= 50) return 'bg-amber-500';
-  return 'bg-red-500';
+function fmtPct(n: number | null | undefined, decimals = 1) {
+  if (n == null) return '—';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(decimals)}%`;
 }
 
-export default function LongTermInvesting() {
-  const [query, setQuery] = useState('');
-  const [result, setResult] = useState<StockAnalysis | null>(null);
-  const [notFound, setNotFound] = useState(false);
+function fmtNum(n: number | null | undefined, decimals = 1) {
+  if (n == null) return '—';
+  return n.toFixed(decimals);
+}
 
-  function handleSearch() {
-    const ticker = query.trim().toUpperCase();
-    if (!ticker) return;
-    const data = SAMPLE_DATA[ticker];
-    if (data) {
-      setResult(data);
-      setNotFound(false);
-    } else {
-      setResult(null);
-      setNotFound(true);
-    }
-  }
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
-  const cfg = result ? ratingConfig(result.rating) : null;
-  const Icon = cfg?.icon ?? MinusCircle;
+function ScoreCard({ data }: { data: StockData }) {
+  const { ticker, quote, profile, scoring, rating, metrics: m } = data;
+  const changePos = quote.dp >= 0;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-10 animate-fade-in">
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-1">
-          <TrendingUp size={20} className="text-emerald-400" />
-          <h1 className="text-xl font-semibold text-zinc-100">Long-Term Investing</h1>
+    <div className="space-y-4 animate-slide-up">
+      {/* Header */}
+      <div className="card p-5">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="font-mono text-2xl font-semibold text-zinc-100">{ticker}</span>
+              <span className={`flex items-center gap-1 text-sm font-mono ${changePos ? 'text-emerald-400' : 'text-red-400'}`}>
+                {changePos ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                {fmtPct(quote.dp)}
+              </span>
+            </div>
+            <p className="text-zinc-400 text-sm">{profile.name}</p>
+            <p className="text-zinc-600 text-xs mt-0.5">{profile.finnhubIndustry}</p>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-2xl font-semibold text-zinc-100">{fmt$(quote.c)}</p>
+            <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg border ${ratingStyle(rating)}`}>
+              {rating}
+            </span>
+          </div>
         </div>
-        <p className="text-sm text-zinc-500 ml-8">
-          Focus on durable fundamentals. Ignore short-term noise. Buy and hold quality.
-        </p>
+
+        {/* Score bar */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex-1 bg-zinc-800 rounded-full h-2">
+            <div
+              className={`h-2 rounded-full transition-all duration-700 ${scoreBarColor(scoring.overall)}`}
+              style={{ width: `${scoring.overall}%` }}
+            />
+          </div>
+          <span className={`font-mono text-sm font-semibold ${scoreColor(scoring.overall)}`}>
+            {scoring.overall}/100
+          </span>
+        </div>
+
+        {/* Quick stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[
+            { label: 'P/E', value: fmtNum(m['peExclExtraTTM'] ?? m['peBasicExclExtraTTM']) },
+            { label: 'Rev Growth', value: fmtPct(m['revenueGrowth3Y'] ?? m['revenueGrowthTTMYoy']) },
+            { label: 'Net Margin', value: fmtPct(m['netMarginTTM'] ?? m['netMarginAnnual']) },
+            { label: 'D/E Ratio', value: fmtNum(m['totalDebt/totalEquityAnnual']) },
+          ].map(({ label, value }) => (
+            <div key={label} className="bg-zinc-800 rounded-lg p-2.5">
+              <p className="text-xs text-zinc-600 uppercase tracking-wider mb-1">{label}</p>
+              <p className="font-mono text-sm font-medium text-zinc-200">{value}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div className="card p-4 mb-6 flex items-center gap-3 border-zinc-700/50 bg-emerald-500/5">
-        <Info size={15} className="text-emerald-400 shrink-0" />
-        <p className="text-xs text-zinc-400">
-          Try: <button onClick={() => { setQuery('AAPL'); }} className="text-emerald-400 hover:underline">AAPL</button>,{' '}
-          <button onClick={() => { setQuery('MSFT'); }} className="text-emerald-400 hover:underline">MSFT</button>,{' '}
-          <button onClick={() => { setQuery('META'); }} className="text-emerald-400 hover:underline">META</button>,{' '}
-          <button onClick={() => { setQuery('TSLA'); }} className="text-emerald-400 hover:underline">TSLA</button>
-          {' '}— live data integration coming in Phase 2.
-        </p>
+      {/* Factor breakdown */}
+      <div className="card divide-y divide-zinc-800">
+        <div className="px-5 py-3">
+          <p className="text-xs text-zinc-600 uppercase tracking-widest font-semibold">Factor Breakdown</p>
+        </div>
+        {Object.entries(scoring.dims).map(([label, score]) => (
+          <div key={label} className="px-5 py-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-sm text-zinc-300">{label}</span>
+              <span className={`font-mono text-sm font-medium ${scoreColor(score)}`}>{score}</span>
+            </div>
+            <div className="w-full bg-zinc-800 rounded-full h-1.5">
+              <div className={`h-1.5 rounded-full ${scoreBarColor(score)}`} style={{ width: `${score}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export default function LongTermInvesting() {
+  const { token } = useAuth();
+  const [query, setQuery] = useState('');
+  const [result, setResult] = useState<StockData | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState('');
+
+  const [generating, setGenerating] = useState(false);
+  const [generated, setGenerated] = useState<{ data: StockData; thesis: string; topThree: StockData[] } | null>(null);
+  const [genErr, setGenErr] = useState('');
+
+  async function handleSearch() {
+    const sym = query.trim().toUpperCase();
+    if (!sym || !token) return;
+    setSearching(true); setSearchErr(''); setResult(null);
+    try {
+      const data = await fetchStockMetrics(token, sym);
+      setResult(data);
+      setGenerated(null);
+    } catch (e) {
+      setSearchErr(e instanceof Error ? e.message : 'Failed to fetch');
+    } finally { setSearching(false); }
+  }
+
+  async function handleGenerate() {
+    if (!token) return;
+    setGenerating(true); setGenErr(''); setResult(null); setGenerated(null);
+    try {
+      const pick = await generateLTPick(token);
+      setGenerated({ data: pick.top, thesis: pick.ai_thesis, topThree: pick.topThree });
+    } catch (e) {
+      setGenErr(e instanceof Error ? e.message : 'Failed to generate');
+    } finally { setGenerating(false); }
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-10 animate-fade-in">
+
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-8">
+        <TrendingUp size={20} className="text-emerald-400" />
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Long-Term Investing</h1>
+          <p className="text-xs text-zinc-600">Fundamental analysis · Buy and hold quality</p>
+        </div>
       </div>
 
-      <div className="flex gap-3 mb-8">
+      {/* Search + Generate */}
+      <div className="flex gap-3 mb-4">
         <div className="relative flex-1">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
           <input
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="Enter ticker symbol (e.g. AAPL)"
-            className="input-field pl-10"
+            placeholder="Ticker symbol (e.g. MSFT)"
+            className="input-field pl-9 font-mono"
             spellCheck={false}
           />
         </div>
-        <button onClick={handleSearch} className="btn-primary px-6">
-          Analyze
+        <button
+          onClick={handleSearch}
+          disabled={searching || !query.trim()}
+          className="btn-primary px-5 text-sm"
+        >
+          {searching ? (
+            <span className="flex items-center gap-2">
+              <span className="w-3.5 h-3.5 border-2 border-zinc-700 border-t-zinc-900 rounded-full animate-spin" />
+              Loading
+            </span>
+          ) : 'Analyze'}
         </button>
       </div>
 
-      {notFound && (
-        <div className="card p-6 text-center">
-          <p className="text-zinc-400 mb-1">No data for <span className="text-zinc-100 font-mono">{query}</span></p>
-          <p className="text-zinc-600 text-sm">Live stock API integration is coming in Phase 2.</p>
+      <button
+        onClick={handleGenerate}
+        disabled={generating}
+        className="w-full mb-8 flex items-center justify-center gap-2 py-3 rounded-lg border border-zinc-700 bg-zinc-900 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:text-zinc-100 transition-colors disabled:opacity-40"
+      >
+        <Sparkles size={15} className="text-violet-400" />
+        {generating ? 'Scanning 20 quality stocks...' : 'Generate Long-Term Pick'}
+      </button>
+
+      {/* Errors */}
+      {searchErr && (
+        <div className="card p-4 mb-5 border-red-500/20 bg-red-500/5 flex items-center gap-2">
+          <AlertCircle size={15} className="text-red-400 shrink-0" />
+          <p className="text-sm text-red-400">{searchErr}</p>
+        </div>
+      )}
+      {genErr && (
+        <div className="card p-4 mb-5 border-red-500/20 bg-red-500/5 flex items-center gap-2">
+          <AlertCircle size={15} className="text-red-400 shrink-0" />
+          <p className="text-sm text-red-400">{genErr.includes('not configured') ? 'Add FINNHUB_API_KEY to your worker secrets.' : genErr}</p>
         </div>
       )}
 
-      {result && cfg && (
-        <div className="space-y-5 animate-slide-up">
-          <div className="card p-6">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <p className="font-mono text-2xl font-medium text-zinc-100">{result.ticker}</p>
-                <p className="text-zinc-400 text-sm">{result.company}</p>
-                <p className="text-zinc-600 text-xs mt-0.5">{result.sector}</p>
-              </div>
-              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-semibold ${cfg.bg} ${cfg.color}`}>
-                <Icon size={15} />
-                {result.rating}
-              </div>
-            </div>
+      {/* Manual search result */}
+      {result && <ScoreCard data={result} />}
 
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-1 bg-zinc-800 rounded-full h-2">
-                <div
-                  className={`h-2 rounded-full ${scoreBarColor(result.overallScore)} transition-all duration-500`}
-                  style={{ width: `${result.overallScore}%` }}
-                />
-              </div>
-              <span className={`font-mono font-medium text-sm ${scoreColor(result.overallScore)}`}>
-                {result.overallScore}/100
-              </span>
-            </div>
-
-            <p className="text-sm text-zinc-400 leading-relaxed">{result.summary}</p>
-          </div>
-
-          <div className="card divide-y divide-zinc-800">
-            <div className="px-6 py-3">
-              <p className="section-header mb-0">Factor Breakdown</p>
-            </div>
-            {result.dimensions.map(dim => (
-              <div key={dim.label} className="px-6 py-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-zinc-300">{dim.label}</span>
-                  <span className={`font-mono text-sm font-medium ${scoreColor(dim.score)}`}>{dim.score}</span>
-                </div>
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="flex-1 bg-zinc-800 rounded-full h-1.5">
-                    <div
-                      className={`h-1.5 rounded-full ${scoreBarColor(dim.score)} transition-all duration-500`}
-                      style={{ width: `${dim.score}%` }}
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-zinc-500">{dim.commentary}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="card p-5 border-zinc-700/50 bg-zinc-900/50">
-            <p className="text-xs text-zinc-600 leading-relaxed text-center">
-              Scores are based on sample data. Phase 2 will integrate live fundamental data via stock API.
-              This tool supports decision-making — it does not replace your own research.
+      {/* AI-generated pick */}
+      {generated && (
+        <div className="space-y-4 animate-slide-up">
+          {/* Banner */}
+          <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-5 py-3 flex items-center gap-2">
+            <Sparkles size={14} className="text-violet-400 shrink-0" />
+            <p className="text-xs text-zinc-400">
+              Scanned {generated.topThree.length > 0 ? '20' : ''} quality stocks · Highest fundamental score
             </p>
           </div>
+
+          <ScoreCard data={generated.data} />
+
+          {/* AI thesis */}
+          {generated.thesis && (
+            <div className="card p-5 border-violet-500/20 bg-violet-500/5">
+              <p className="text-xs text-zinc-600 uppercase tracking-widest mb-3">AI Analysis</p>
+              <p className="text-sm text-zinc-300 leading-relaxed">{generated.thesis}</p>
+            </div>
+          )}
+
+          {/* Other top picks */}
+          {generated.topThree.length > 1 && (
+            <div className="card divide-y divide-zinc-800">
+              <div className="px-5 py-3">
+                <p className="text-xs text-zinc-600 uppercase tracking-widest font-semibold">Also Scoring Well</p>
+              </div>
+              {generated.topThree.slice(1).map(s => (
+                <div key={s.ticker} className="px-5 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-sm font-medium text-zinc-200">{s.ticker}</span>
+                    <span className="text-xs text-zinc-500">{s.profile.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs font-semibold ${scoreColor(s.scoring.overall)}`}>{s.scoring.overall}/100</span>
+                    <span className={`text-xs px-2 py-0.5 rounded border ${ratingStyle(s.rating)}`}>{s.rating}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {!result && !notFound && (
-        <div className="space-y-4">
-          <p className="section-header">Investment Philosophy</p>
-          <div className="grid md:grid-cols-2 gap-4">
-            {[
-              { title: 'Buy Strong Businesses', body: 'Focus on companies with durable competitive advantages, not just cheap stocks.' },
-              { title: 'Be Patient', body: 'The best investments require holding through short-term volatility. Think in years, not quarters.' },
-              { title: 'Valuation Matters', body: 'Even great businesses can be poor investments if you overpay. Wait for the right price.' },
-              { title: 'Diversify Deliberately', body: 'Spread across uncorrelated sectors. Concentration increases risk without guaranteed return.' },
-            ].map(item => (
-              <div key={item.title} className="card p-5">
-                <h3 className="text-sm font-semibold text-zinc-200 mb-2">{item.title}</h3>
-                <p className="text-xs text-zinc-500 leading-relaxed">{item.body}</p>
-              </div>
-            ))}
-          </div>
+      {/* Empty state */}
+      {!result && !generated && !searching && !generating && !searchErr && !genErr && (
+        <div className="card p-8 text-center">
+          <TrendingUp size={28} className="text-zinc-700 mx-auto mb-3" />
+          <p className="text-zinc-500 text-sm mb-1">Search a ticker or generate a pick</p>
+          <p className="text-zinc-700 text-xs">Live data via Finnhub · Scored across 8 fundamental factors</p>
         </div>
       )}
     </div>
