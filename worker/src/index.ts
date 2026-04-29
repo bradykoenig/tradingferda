@@ -1,20 +1,14 @@
 export interface Env {
   PASSWORD_HASH: string;
   JWT_SECRET: string;
-  ALLOWED_ORIGIN: string;
 }
 
 const SALT = 'schlima-site-v1-salt';
 const JWT_EXPIRY_SECONDS = 60 * 60 * 24; // 24 hours
 
-function corsHeaders(origin: string, env: Env): HeadersInit {
-  const allowed = env.ALLOWED_ORIGIN ?? 'https://schlima.com';
-  const isAllowed =
-    origin === allowed ||
-    origin === 'http://localhost:5173' ||
-    origin === 'http://localhost:4173';
+function corsHeaders(): HeadersInit {
   return {
-    'Access-Control-Allow-Origin': isAllowed ? origin : allowed,
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
@@ -94,8 +88,7 @@ async function verifyJWT(token: string, secret: string): Promise<Record<string, 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const origin = request.headers.get('Origin') ?? '';
-    const cors = corsHeaders(origin, env);
+    const cors = corsHeaders();
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: cors });

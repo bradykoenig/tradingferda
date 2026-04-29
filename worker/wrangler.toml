@@ -3,13 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2024-07-25"
 compatibility_flags = ["nodejs_compat"]
 
-[vars]
-ALLOWED_ORIGIN = "https://schlima.com"
-
 # Secrets (set via `wrangler secret put`):
 #   PASSWORD_HASH  — output of scripts/generate-hash.js
 #   JWT_SECRET     — any long random string
-
-[[routes]]
-pattern = "api.schlima.com/*"
-zone_name = "schlima.com"
