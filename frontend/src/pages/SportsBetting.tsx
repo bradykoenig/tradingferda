@@ -9,7 +9,8 @@ interface BookLine { book: string; odds: number }
 
 interface Play {
   gameId: string; sport: string; homeTeam: string; awayTeam: string;
-  commenceTime: string; side: string; bestBook: string; bestOdds: number;
+  commenceTime: string; side: string; market: 'h2h' | 'spreads' | 'totals';
+  point?: number; bestBook: string; bestOdds: number;
   impliedProb: number; fairProb: number; edge: number; books: BookLine[];
   units: 0.25 | 0.5 | 1;
 }
@@ -37,8 +38,19 @@ const SPORT_COLOR: Record<string, string> = {
   americanfootball_nfl: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
 };
 
+const MARKET_LABEL: Record<string, string> = {
+  h2h: 'Moneyline',
+  spreads: 'Spread',
+  totals: 'Total',
+};
+
+const MARKET_COLOR: Record<string, string> = {
+  h2h: 'text-violet-400 bg-violet-500/10 border-violet-500/20',
+  spreads: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+  totals: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+};
+
 const BANKROLL_KEY = 'schlima_bankroll_v2';
-const EDGE_MIN = 0.035;
 
 // ─── Math helpers ────────────────────────────────────────────────────────────
 
@@ -52,6 +64,7 @@ function noVig(a: number, b: number): [number, number] {
 }
 
 function fmtOdds(n: number) { return n > 0 ? `+${n}` : `${n}`; }
+function fmtSpread(n: number) { return n >= 0 ? `+${n}` : `${n}`; }
 function pct(n: number)     { return `${(n * 100).toFixed(1)}%`; }
 
 function fmtTime(iso: string) {
@@ -67,6 +80,89 @@ function fmtTime(iso: string) {
 
 // ─── Processing ──────────────────────────────────────────────────────────────
 
+function consensusPoint(g: GameOdds, marketKey: string, sideName: string): number | null {
+  const points: number[] = [];
+  for (const bm of g.bookmakers) {
+    const mkt = bm.markets.find(m => m.key === marketKey);
+    if (!mkt) continue;
+    const out = mkt.outcomes.find(o => o.name === sideName);
+    if (out?.point != null) points.push(out.point);
+  }
+  if (points.length === 0) return null;
+  const freq: Record<string, number> = {};
+  for (const p of points) freq[String(p)] = (freq[String(p)] ?? 0) + 1;
+  return parseFloat(Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]);
+}
+
+function pairLines(
+  g: GameOdds, marketKey: string,
+  nameA: string, nameB: string,
+  ptA?: number | null, ptB?: number | null,
+): Array<{ a: BookLine; b: BookLine }> {
+  const pairs: Array<{ a: BookLine; b: BookLine }> = [];
+  for (const bm of g.bookmakers) {
+    const mkt = bm.markets.find(m => m.key === marketKey);
+    if (!mkt) continue;
+    const outA = mkt.outcomes.find(o =>
+      o.name === nameA && (ptA == null || Math.abs((o.point ?? 0) - ptA) < 0.01)
+    );
+    const outB = mkt.outcomes.find(o =>
+      o.name === nameB && (ptB == null || Math.abs((o.point ?? 0) - ptB) < 0.01)
+    );
+    if (outA && outB) pairs.push({
+      a: { book: bm.title, odds: outA.price },
+      b: { book: bm.title, odds: outB.price },
+    });
+  }
+  return pairs;
+}
+
+function avgFairProbs(pairs: Array<{ a: BookLine; b: BookLine }>): [number, number] {
+  let sumA = 0, sumB = 0;
+  for (const { a, b } of pairs) {
+    const [fa, fb] = noVig(a.odds, b.odds);
+    sumA += fa; sumB += fb;
+  }
+  return [sumA / pairs.length, sumB / pairs.length];
+}
+
+function collectLines(
+  g: GameOdds, marketKey: string, sideName: string, matchPt?: number | null,
+): BookLine[] {
+  const lines: BookLine[] = [];
+  for (const bm of g.bookmakers) {
+    const mkt = bm.markets.find(m => m.key === marketKey);
+    if (!mkt) continue;
+    const out = mkt.outcomes.find(o =>
+      o.name === sideName && (matchPt == null || Math.abs((o.point ?? 0) - matchPt) < 0.01)
+    );
+    if (out) lines.push({ book: bm.title, odds: out.price });
+  }
+  return lines;
+}
+
+function buildPlay(
+  g: GameOdds,
+  market: 'h2h' | 'spreads' | 'totals',
+  side: string,
+  fairProb: number,
+  allLines: BookLine[],
+  point?: number,
+): Play | null {
+  if (allLines.length === 0) return null;
+  const best = allLines.reduce((b, x) => x.odds > b.odds ? x : b);
+  const edge = fairProb - imp(best.odds);
+  if (edge <= 0) return null;
+  return {
+    gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
+    commenceTime: g.commence_time, side, market, point,
+    bestBook: best.book, bestOdds: best.odds,
+    impliedProb: imp(best.odds), fairProb, edge,
+    books: [...allLines].sort((a, b) => b.odds - a.odds),
+    units: edge >= 0.06 ? 1 : edge >= 0.04 ? 0.5 : 0.25,
+  };
+}
+
 function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
   const plays: Play[] = [];
   const rejects: Reject[] = [];
@@ -75,68 +171,62 @@ function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
   for (const g of games) {
     if (new Date(g.commence_time) <= now) continue;
 
-    const homeLines: BookLine[] = [];
-    const awayLines: BookLine[] = [];
+    const gamePlays: Play[] = [];
 
-    for (const bm of g.bookmakers) {
-      const h2h = bm.markets.find(m => m.key === 'h2h');
-      if (!h2h) continue;
-      const ho = h2h.outcomes.find(o => o.name === g.home_team);
-      const ao = h2h.outcomes.find(o => o.name === g.away_team);
-      if (ho && ao) {
-        homeLines.push({ book: bm.title, odds: ho.price });
-        awayLines.push({ book: bm.title, odds: ao.price });
+    // ── Moneyline ─────────────────────────────────────────────────────────
+    const h2hPairs = pairLines(g, 'h2h', g.home_team, g.away_team);
+    if (h2hPairs.length >= 2) {
+      const [fairH, fairA] = avgFairProbs(h2hPairs);
+      const pH = buildPlay(g, 'h2h', g.home_team, fairH, collectLines(g, 'h2h', g.home_team));
+      const pA = buildPlay(g, 'h2h', g.away_team, fairA, collectLines(g, 'h2h', g.away_team));
+      if (pH) gamePlays.push(pH);
+      if (pA) gamePlays.push(pA);
+    }
+
+    // ── Spread ────────────────────────────────────────────────────────────
+    const homeSpreadPt = consensusPoint(g, 'spreads', g.home_team);
+    const awaySpreadPt = consensusPoint(g, 'spreads', g.away_team);
+    if (homeSpreadPt != null && awaySpreadPt != null) {
+      const spreadPairs = pairLines(g, 'spreads', g.home_team, g.away_team, homeSpreadPt, awaySpreadPt);
+      if (spreadPairs.length >= 2) {
+        const [fairH, fairA] = avgFairProbs(spreadPairs);
+        const homeSide = `${g.home_team} ${fmtSpread(homeSpreadPt)}`;
+        const awaySide = `${g.away_team} ${fmtSpread(awaySpreadPt)}`;
+        const pH = buildPlay(g, 'spreads', homeSide, fairH, collectLines(g, 'spreads', g.home_team, homeSpreadPt), homeSpreadPt);
+        const pA = buildPlay(g, 'spreads', awaySide, fairA, collectLines(g, 'spreads', g.away_team, awaySpreadPt), awaySpreadPt);
+        if (pH) gamePlays.push(pH);
+        if (pA) gamePlays.push(pA);
       }
     }
 
-    if (homeLines.length < 2) {
-      rejects.push({
-        gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
-        commenceTime: g.commence_time, homeML: '—', awayML: '—',
-        reason: 'Not enough books. Need at least 2 lines to calculate edge.',
-      });
-      continue;
-    }
-
-    let sumFH = 0, sumFA = 0;
-    for (let i = 0; i < homeLines.length; i++) {
-      const [h, a] = noVig(homeLines[i].odds, awayLines[i].odds);
-      sumFH += h; sumFA += a;
-    }
-    const fairH = sumFH / homeLines.length;
-    const fairA = sumFA / awayLines.length;
-
-    const bestH = homeLines.reduce((b, x) => x.odds > b.odds ? x : b);
-    const bestA = awayLines.reduce((b, x) => x.odds > b.odds ? x : b);
-    const edgeH = fairH - imp(bestH.odds);
-    const edgeA = fairA - imp(bestA.odds);
-
-    let found = false;
-    for (const [side, edge, best, fairProb, lines] of [
-      [g.home_team, edgeH, bestH, fairH, homeLines],
-      [g.away_team, edgeA, bestA, fairA, awayLines],
-    ] as [string, number, BookLine, number, BookLine[]][]) {
-      if (edge >= EDGE_MIN) {
-        found = true;
-        plays.push({
-          gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
-          commenceTime: g.commence_time, side, bestBook: best.book, bestOdds: best.odds,
-          impliedProb: imp(best.odds), fairProb, edge,
-          books: [...lines].sort((a, b) => b.odds - a.odds),
-          units: edge >= 0.06 ? 1 : edge >= 0.045 ? 0.5 : 0.25,
-        });
+    // ── Total ─────────────────────────────────────────────────────────────
+    const overPt = consensusPoint(g, 'totals', 'Over');
+    if (overPt != null) {
+      const totalPairs = pairLines(g, 'totals', 'Over', 'Under', overPt, overPt);
+      if (totalPairs.length >= 2) {
+        const [fairO, fairU] = avgFairProbs(totalPairs);
+        const pO = buildPlay(g, 'totals', `Over ${overPt}`, fairO, collectLines(g, 'totals', 'Over', overPt), overPt);
+        const pU = buildPlay(g, 'totals', `Under ${overPt}`, fairU, collectLines(g, 'totals', 'Under', overPt), overPt);
+        if (pO) gamePlays.push(pO);
+        if (pU) gamePlays.push(pU);
       }
     }
 
-    if (!found) {
-      const maxEdge = Math.max(edgeH, edgeA);
+    if (gamePlays.length > 0) {
+      plays.push(...gamePlays);
+    } else {
+      const homeH2H = collectLines(g, 'h2h', g.home_team);
+      const awayH2H = collectLines(g, 'h2h', g.away_team);
+      const bestH = homeH2H.length > 0 ? homeH2H.reduce((b, x) => x.odds > b.odds ? x : b) : null;
+      const bestA = awayH2H.length > 0 ? awayH2H.reduce((b, x) => x.odds > b.odds ? x : b) : null;
       rejects.push({
         gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
         commenceTime: g.commence_time,
-        homeML: fmtOdds(bestH.odds), awayML: fmtOdds(bestA.odds),
-        reason: maxEdge > 0
-          ? `Best edge: +${(maxEdge * 100).toFixed(1)}% — below the 3.5% threshold.`
-          : 'Books are aligned. Vig cancels any detectable edge.',
+        homeML: bestH ? fmtOdds(bestH.odds) : '—',
+        awayML: bestA ? fmtOdds(bestA.odds) : '—',
+        reason: h2hPairs.length < 2
+          ? 'Not enough books for accurate line comparison.'
+          : 'No positive edge found across moneyline, spread, or total.',
       });
     }
   }
@@ -162,11 +252,19 @@ function SportBadge({ sportKey, label }: { sportKey: string; label: string }) {
   );
 }
 
+function MarketBadge({ market }: { market: string }) {
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${MARKET_COLOR[market] ?? 'text-zinc-400 bg-zinc-800 border-zinc-700'}`}>
+      {MARKET_LABEL[market] ?? market}
+    </span>
+  );
+}
+
 function EdgeBar({ edge }: { edge: number }) {
-  const pct = Math.min(edge / 0.12, 1) * 100;
+  const width = Math.min(edge / 0.12, 1) * 100;
   return (
     <div className="w-full bg-zinc-800 rounded-full h-1 mt-1">
-      <div className="h-1 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400" style={{ width: `${pct}%` }} />
+      <div className="h-1 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400" style={{ width: `${width}%` }} />
     </div>
   );
 }
@@ -176,20 +274,18 @@ function PlayCard({ play, unitDollar }: { play: Play; unitDollar: number }) {
   return (
     <div className="rounded-xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/5 to-transparent overflow-hidden">
       <div className="px-5 py-4 flex items-center justify-between border-b border-zinc-800/60">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <SportBadge sportKey={sportKey} label={play.sport} />
+          <MarketBadge market={play.market} />
           <span className="text-sm text-zinc-400">{play.homeTeam} vs {play.awayTeam}</span>
         </div>
-        <span className="text-xs text-zinc-600">{fmtTime(play.commenceTime)}</span>
+        <span className="text-xs text-zinc-600 shrink-0 ml-2">{fmtTime(play.commenceTime)}</span>
       </div>
 
       <div className="px-5 py-4">
         <div className="flex items-start justify-between mb-4">
-          <div>
-            <p className="text-xl font-semibold text-zinc-100">{play.side}</p>
-            <p className="text-sm text-zinc-500">Moneyline</p>
-          </div>
-          <div className="text-right">
+          <p className="text-xl font-semibold text-zinc-100 leading-tight pr-4">{play.side}</p>
+          <div className="text-right shrink-0">
             <p className="font-mono text-2xl font-semibold text-emerald-400">{fmtOdds(play.bestOdds)}</p>
             <p className="text-xs text-zinc-500">@ {play.bestBook}</p>
           </div>
@@ -311,7 +407,7 @@ export default function SportsBetting() {
           <Activity size={20} className="text-violet-400" />
           <div>
             <h1 className="text-xl font-semibold text-zinc-100">Sports Betting</h1>
-            <p className="text-xs text-zinc-600">Edge ≥ 3.5% threshold · Moneyline only</p>
+            <p className="text-xs text-zinc-600">Live odds · Moneyline, spreads & totals · All positive edges</p>
           </div>
         </div>
         <button
@@ -344,8 +440,8 @@ export default function SportsBetting() {
       {/* Tab bar */}
       <div className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-xl mb-8">
         {([
-          { id: 'plays' as Tab, label: 'Plays', icon: TrendingUp, count: plays.length },
-          { id: 'no-bets' as Tab, label: 'No Bets', icon: Ban, count: rejects.length },
+          { id: 'plays' as Tab, label: 'Best Bets', icon: TrendingUp, count: plays.length },
+          { id: 'no-bets' as Tab, label: 'No Edge', icon: Ban, count: rejects.length },
           { id: 'bankroll' as Tab, label: 'Bankroll', icon: DollarSign, count: null },
         ]).map(({ id, label, icon: Icon, count }) => (
           <button
@@ -398,7 +494,7 @@ export default function SportsBetting() {
         </div>
       )}
 
-      {/* Plays tab */}
+      {/* Best bets tab */}
       {!loading && tab === 'plays' && (
         <div className="space-y-4 animate-fade-in">
           {!rawData && !error && (
@@ -407,19 +503,19 @@ export default function SportsBetting() {
           {rawData && plays.length === 0 && (
             <div className="card p-12 text-center">
               <Ban size={28} className="text-zinc-700 mx-auto mb-3" />
-              <p className="text-zinc-400 font-medium mb-1">No plays today</p>
-              <p className="text-zinc-600 text-sm">Nothing cleared the 3.5% edge filter. Check back or try another sport.</p>
+              <p className="text-zinc-400 font-medium mb-1">No edges found</p>
+              <p className="text-zinc-600 text-sm">Books are aligned across all markets. No positive edge on any line.</p>
             </div>
           )}
-          {plays.map(p => <PlayCard key={`${p.gameId}-${p.side}`} play={p} unitDollar={bankroll.unit} />)}
+          {plays.map(p => <PlayCard key={`${p.gameId}-${p.side}-${p.market}`} play={p} unitDollar={bankroll.unit} />)}
         </div>
       )}
 
-      {/* No-bets tab */}
+      {/* No-edge tab */}
       {!loading && tab === 'no-bets' && (
         <div className="space-y-2 animate-fade-in">
           {rejects.length === 0 && rawData && (
-            <div className="card p-8 text-center text-zinc-600 text-sm">No games evaluated yet.</div>
+            <div className="card p-8 text-center text-zinc-600 text-sm">No games without edges.</div>
           )}
           {rejects.map(r => <RejectCard key={r.gameId} r={r} />)}
         </div>

@@ -179,7 +179,7 @@ export default {
       const oddsUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/odds/`);
       oddsUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
       oddsUrl.searchParams.set('regions', 'us');
-      oddsUrl.searchParams.set('markets', 'h2h');
+      oddsUrl.searchParams.set('markets', 'h2h,spreads,totals');
       oddsUrl.searchParams.set('oddsFormat', 'american');
       const res = await fetch(oddsUrl.toString());
       if (!res.ok) return json({ error: 'Odds API error' }, 502, cors);
