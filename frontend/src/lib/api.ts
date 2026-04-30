@@ -25,10 +25,11 @@ export interface OddsOutcome {
   name: string;
   price: number;
   point?: number;
+  description?: string;
 }
 
 export interface OddsMarket {
-  key: 'h2h' | 'spreads' | 'totals';
+  key: string;
   outcomes: OddsOutcome[];
 }
 
@@ -135,6 +136,27 @@ export async function fetchScores(token: string, sport: string): Promise<GameSco
   });
   if (!res.ok) throw new Error('Failed to fetch scores');
   return res.json() as Promise<GameScore[]>;
+}
+
+export interface StatContext {
+  avg: number;
+  last10Avg?: number;
+  gamesPlayed: number;
+}
+
+export interface PropsGame extends GameOdds {
+  playerStats?: Record<string, StatContext>;  // key: "PlayerName|marketKey"
+}
+
+export async function fetchProps(token: string, sport: string): Promise<PropsGame[]> {
+  const res = await fetch(`${API_BASE}/props?sport=${encodeURIComponent(sport)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? 'Failed to fetch props');
+  }
+  return res.json() as Promise<PropsGame[]>;
 }
 
 export async function fetchOdds(token: string, sport: string): Promise<GameOdds[]> {

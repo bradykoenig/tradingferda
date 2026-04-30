@@ -144,6 +144,204 @@ async function callClaude(prompt: string, apiKey: string): Promise<string> {
   }
 }
 
+// ─── Stat enrichment helpers ─────────────────────────────────────────────────
+
+interface StatContext { avg: number; last10Avg?: number; gamesPlayed: number }
+
+const MLB_PROP_FIELDS: Record<string, { group: 'hitting' | 'pitching'; field: string }> = {
+  batter_hits:        { group: 'hitting',  field: 'hits'       },
+  batter_home_runs:   { group: 'hitting',  field: 'homeRuns'   },
+  pitcher_strikeouts: { group: 'pitching', field: 'strikeOuts' },
+};
+
+const NHL_PROP_FIELDS: Record<string, string> = {
+  player_goals:         'goals',
+  player_shots_on_goal: 'shots',
+  player_points:        'points',
+};
+
+function normName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+async function mlbNameMap(cache: Cache): Promise<Record<string, number>> {
+  const key = new Request('https://cache.schlima/mlb/namemap');
+  const cached = await cache.match(key).catch(() => null);
+  if (cached) return cached.json().catch(() => ({})) as Promise<Record<string, number>>;
+
+  const res = await fetch('https://statsapi.mlb.com/api/v1/sports/1/players?season=2025&gameType=R', {
+    headers: { 'User-Agent': 'Schlima/1.0' },
+  }).catch(() => null);
+  if (!res?.ok) return {};
+
+  const data = await res.json() as { people?: Array<{ id: number; fullName: string }> };
+  const map: Record<string, number> = {};
+  for (const p of data.people ?? []) map[normName(p.fullName)] = p.id;
+  await cache.put(key, new Response(JSON.stringify(map), {
+    headers: { 'Cache-Control': 'public, max-age=21600', 'Content-Type': 'application/json' },
+  })).catch(() => {});
+  return map;
+}
+
+async function mlbBatchStats(
+  requests: Array<{ playerName: string; market: string }>,
+  nameMap: Record<string, number>,
+  cache: Cache,
+): Promise<Record<string, StatContext>> {
+  const result: Record<string, StatContext> = {};
+  const hitterIds: number[] = [], pitcherIds: number[] = [];
+  const idMeta = new Map<number, Array<{ playerName: string; market: string; field: string; group: string }>>();
+
+  for (const { playerName, market } of requests) {
+    const fi = MLB_PROP_FIELDS[market];
+    if (!fi) continue;
+    const id = nameMap[normName(playerName)];
+    if (!id) continue;
+    if (!idMeta.has(id)) {
+      idMeta.set(id, []);
+      (fi.group === 'hitting' ? hitterIds : pitcherIds).push(id);
+    }
+    idMeta.get(id)!.push({ playerName, market, field: fi.field, group: fi.group });
+  }
+
+  const fetchGroup = async (ids: number[], group: string): Promise<Record<number, Record<string, number>>> => {
+    if (!ids.length) return {};
+    const gKey = new Request(`https://cache.schlima/mlb/batch/${group}/${[...ids].sort().join(',')}`);
+    const gc = await cache.match(gKey).catch(() => null);
+    if (gc) return gc.json().catch(() => ({})) as Promise<Record<number, Record<string, number>>>;
+
+    const r = await fetch(
+      `https://statsapi.mlb.com/api/v1/people?personIds=${ids.join(',')}&hydrate=stats(group=${group},type=season,season=2025)&season=2025`,
+      { headers: { 'User-Agent': 'Schlima/1.0' } },
+    ).catch(() => null);
+    if (!r?.ok) return {};
+
+    const d = await r.json() as {
+      people?: Array<{ id: number; stats?: Array<{ splits?: Array<{ stat: Record<string, number> }> }> }>;
+    };
+    const gr: Record<number, Record<string, number>> = {};
+    for (const p of d.people ?? []) {
+      const sp = p.stats?.[0]?.splits?.[0];
+      if (sp) gr[p.id] = sp.stat;
+    }
+    await cache.put(gKey, new Response(JSON.stringify(gr), {
+      headers: { 'Cache-Control': 'public, max-age=3600', 'Content-Type': 'application/json' },
+    })).catch(() => {});
+    return gr;
+  };
+
+  // Also fetch game logs for last-10-game trend (hitters only for now)
+  const fetchGameLog = async (ids: number[], group: string): Promise<Record<number, number[]>> => {
+    if (!ids.length) return {};
+    const logResults: Record<number, number[]> = {};
+    await Promise.allSettled(ids.map(async (id) => {
+      const gKey = new Request(`https://cache.schlima/mlb/gamelog/${group}/${id}`);
+      const gc = await cache.match(gKey).catch(() => null);
+      if (gc) { logResults[id] = await gc.json().catch(() => []) as number[]; return; }
+
+      const fieldKey = group === 'hitting' ? 'hits' : 'strikeOuts';
+      const r = await fetch(
+        `https://statsapi.mlb.com/api/v1/people/${id}/stats?stats=gameLog&group=${group}&season=2025&sportId=1`,
+        { headers: { 'User-Agent': 'Schlima/1.0' } },
+      ).catch(() => null);
+      if (!r?.ok) return;
+      const d = await r.json() as { stats?: Array<{ splits?: Array<{ stat: Record<string, number> }> }> };
+      const logs = (d.stats?.[0]?.splits ?? []).slice(-15).map(g => g.stat[fieldKey] ?? 0);
+      logResults[id] = logs;
+      await cache.put(gKey, new Response(JSON.stringify(logs), {
+        headers: { 'Cache-Control': 'public, max-age=3600', 'Content-Type': 'application/json' },
+      })).catch(() => {});
+    }));
+    return logResults;
+  };
+
+  const [hStats, pStats, hLogs] = await Promise.all([
+    fetchGroup(hitterIds, 'hitting'),
+    fetchGroup(pitcherIds, 'pitching'),
+    fetchGameLog(hitterIds, 'hitting'),
+  ]);
+
+  for (const [id, metas] of idMeta.entries()) {
+    for (const { playerName, market, field, group } of metas) {
+      const stats = group === 'hitting' ? hStats[id] : pStats[id];
+      if (!stats) continue;
+      const total = stats[field];
+      const gp = stats.gamesPlayed ?? stats.gamesPitched ?? 0;
+      if (total == null || gp === 0) continue;
+
+      let last10Avg: number | undefined;
+      const logs = hLogs[id];
+      if (logs && logs.length >= 5) {
+        const recent = logs.slice(-10);
+        last10Avg = recent.reduce((s, v) => s + v, 0) / recent.length;
+      }
+
+      result[`${playerName}|${market}`] = { avg: total / gp, last10Avg, gamesPlayed: gp };
+    }
+  }
+  return result;
+}
+
+async function nhlSingleStats(playerName: string, propMarket: string, cache: Cache): Promise<StatContext | null> {
+  const field = NHL_PROP_FIELDS[propMarket];
+  if (!field) return null;
+
+  const key = new Request(`https://cache.schlima/nhl/${normName(playerName)}/${field}`);
+  const cached = await cache.match(key).catch(() => null);
+  if (cached) return cached.json().catch(() => null) as Promise<StatContext | null>;
+
+  const suggestRes = await fetch(
+    `https://suggest.svc.nhl.com/svc/suggest/v1/minplayers/${encodeURIComponent(playerName)}/3`,
+    { headers: { 'User-Agent': 'Schlima/1.0' } },
+  ).catch(() => null);
+  if (!suggestRes?.ok) return null;
+
+  const suggestData = await suggestRes.json() as { suggestions?: string[] };
+  const playerId = suggestData.suggestions?.[0]?.split('|')[0];
+  if (!playerId || isNaN(parseInt(playerId))) return null;
+
+  const pRes = await fetch(`https://api-web.nhle.com/v1/player/${playerId}/landing`).catch(() => null);
+  if (!pRes?.ok) return null;
+
+  const pd = await pRes.json() as {
+    featuredStats?: { regularSeason?: { subSeason?: Record<string, number> } };
+  };
+  const stats = pd.featuredStats?.regularSeason?.subSeason;
+  if (!stats) return null;
+
+  const gp = stats.gamesPlayed ?? 0;
+  const total = stats[field];
+  if (!gp || total == null) return null;
+
+  const ctx: StatContext = { avg: total / gp, gamesPlayed: gp };
+  await cache.put(key, new Response(JSON.stringify(ctx), {
+    headers: { 'Cache-Control': 'public, max-age=3600', 'Content-Type': 'application/json' },
+  })).catch(() => {});
+  return ctx;
+}
+
+async function enrichPlayerStats(
+  requests: Array<{ playerName: string; market: string }>,
+  sport: string,
+  cache: Cache,
+): Promise<Record<string, StatContext>> {
+  if (sport === 'baseball_mlb') {
+    const nameMap = await mlbNameMap(cache);
+    return mlbBatchStats(requests, nameMap, cache);
+  }
+  if (sport === 'icehockey_nhl') {
+    const result: Record<string, StatContext> = {};
+    await Promise.allSettled(
+      requests.slice(0, 12).map(async ({ playerName, market }) => {
+        const ctx = await nhlSingleStats(playerName, market, cache);
+        if (ctx) result[`${playerName}|${market}`] = ctx;
+      }),
+    );
+    return result;
+  }
+  return {};
+}
+
 // ─── Main handler ──────────────────────────────────────────────────────────────
 
 export default {
@@ -193,20 +391,108 @@ export default {
       }
     }
 
+    if (url.pathname === '/api/props' && request.method === 'GET') {
+      const authErr = await requireAuth(request, env, cors);
+      if (authErr) return authErr;
+      if (!env.ODDS_API_KEY) return json({ error: 'Odds API not configured' }, 503, cors);
+      const sport = url.searchParams.get('sport') ?? 'basketball_nba';
+      const propMarketsMap: Record<string, string> = {
+        basketball_nba: 'player_points,player_rebounds,player_assists,player_threes',
+        baseball_mlb: 'batter_hits,pitcher_strikeouts,batter_home_runs',
+        icehockey_nhl: 'player_goals,player_shots_on_goal,player_points',
+        americanfootball_nfl: 'player_pass_yds,player_rush_yds,player_reception_yds,player_reception_tds',
+      };
+      const propMarkets = propMarketsMap[sport] ?? 'player_points';
+      try {
+        const eventsUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/events/`);
+        eventsUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
+        const evRes = await fetch(eventsUrl.toString());
+        if (!evRes.ok) return json({ error: 'Player props require Odds API Standard plan ($30/mo).' }, 402, cors);
+        const events = await evRes.json() as Array<{ id: string; sport_key: string; sport_title: string; commence_time: string; home_team: string; away_team: string }>;
+        const now = new Date();
+        // Analyse up to 10 upcoming games so we have a large pool to filter from
+        const upcoming = events
+          .filter(e => new Date(e.commence_time) > now)
+          .sort((a, b) => new Date(a.commence_time).getTime() - new Date(b.commence_time).getTime())
+          .slice(0, 10);
+
+        // Fetch prop odds for all games in parallel
+        const rawProps = await Promise.all(upcoming.map(async (event) => {
+          const propUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/`);
+          propUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
+          propUrl.searchParams.set('regions', 'us');
+          propUrl.searchParams.set('markets', propMarkets);
+          propUrl.searchParams.set('oddsFormat', 'american');
+          try {
+            const res = await fetch(propUrl.toString());
+            if (!res.ok) return null;
+            const data = await res.json() as { bookmakers?: Array<{ title: string; markets: Array<{ key: string; outcomes: Array<{ name: string; description?: string; price: number; point?: number }> }> }> };
+            return { ...event, bookmakers: data.bookmakers ?? [] };
+          } catch { return null; }
+        }));
+        const propsData = rawProps.filter((g): g is NonNullable<typeof g> => g !== null);
+
+        // Collect unique player/market combos for stat enrichment
+        const statRequests: Array<{ playerName: string; market: string }> = [];
+        const seen = new Set<string>();
+        for (const game of propsData) {
+          for (const bm of game.bookmakers) {
+            for (const mkt of bm.markets) {
+              for (const out of mkt.outcomes) {
+                if (!out.description) continue;
+                const k = `${out.description}|${mkt.key}`;
+                if (!seen.has(k)) { seen.add(k); statRequests.push({ playerName: out.description, market: mkt.key }); }
+              }
+            }
+          }
+        }
+
+        // Enrich with real player stats from official free APIs (MLB + NHL)
+        const cache = caches.default;
+        const playerStats = await enrichPlayerStats(statRequests, sport, cache);
+
+        // Attach the shared stat map to every game so the frontend can use it
+        const enriched = propsData.map(game => ({ ...game, playerStats }));
+        return new Response(JSON.stringify(enriched), {
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        });
+      } catch {
+        return json({ error: 'Failed to fetch player props' }, 502, cors);
+      }
+    }
+
     if (url.pathname === '/api/odds' && request.method === 'GET') {
       const authErr = await requireAuth(request, env, cors);
       if (authErr) return authErr;
       if (!env.ODDS_API_KEY) return json({ error: 'Odds API not configured' }, 503, cors);
       const sport = url.searchParams.get('sport') ?? 'basketball_nba';
+
+      // 20-minute server-side cache so all devices see identical picks within the same window
+      const cache = caches.default;
+      const cacheKey = new Request(`https://cache.schlima/odds/${sport}`);
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const body = await cached.text();
+        return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
+      }
+
       const oddsUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/odds/`);
       oddsUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
       oddsUrl.searchParams.set('regions', 'us');
       oddsUrl.searchParams.set('markets', 'h2h,spreads,totals');
       oddsUrl.searchParams.set('oddsFormat', 'american');
-      const res = await fetch(oddsUrl.toString());
-      if (!res.ok) return json({ error: 'Odds API error' }, 502, cors);
-      const data = await res.json();
-      return new Response(JSON.stringify(data), { headers: { ...cors, 'Content-Type': 'application/json' } });
+      try {
+        const res = await fetch(oddsUrl.toString());
+        if (!res.ok) return json({ error: 'Odds API error' }, 502, cors);
+        const data = await res.json();
+        const body = JSON.stringify(data);
+        await cache.put(cacheKey, new Response(body, {
+          headers: { 'Cache-Control': 'public, max-age=1200', 'Content-Type': 'application/json' },
+        }));
+        return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
+      } catch {
+        return json({ error: 'Failed to fetch odds' }, 502, cors);
+      }
     }
 
     // ── Stock: single ticker ──────────────────────────────────────────────────

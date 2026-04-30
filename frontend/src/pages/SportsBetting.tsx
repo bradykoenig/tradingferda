@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Activity, RefreshCw, DollarSign, TrendingUp, Ban, AlertCircle, Star, Trophy, CheckCircle, XCircle, Clock } from 'lucide-react';
-import { fetchOdds, fetchScores, GameOdds, GameScore } from '../lib/api';
+import { Activity, RefreshCw, DollarSign, TrendingUp, Ban, AlertCircle, Star, Trophy, CheckCircle, XCircle, Clock, Users } from 'lucide-react';
+import { fetchOdds, fetchScores, fetchProps, GameOdds, GameScore, PropsGame, StatContext } from '../lib/api';
 import { useAuth } from '../hooks/useAuth';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -9,9 +9,15 @@ interface BookLine { book: string; odds: number }
 
 interface Play {
   gameId: string; sport: string; homeTeam: string; awayTeam: string;
-  commenceTime: string; side: string; market: 'h2h' | 'spreads' | 'totals';
+  commenceTime: string; side: string;
+  market: 'h2h' | 'spreads' | 'totals' | 'props';
+  propMarket?: string;
+  playerName?: string;
   point?: number; bestBook: string; bestOdds: number;
-  impliedProb: number; fairProb: number; edge: number; books: BookLine[];
+  impliedProb: number; fairProb: number; edge: number;
+  confidence: number;
+  statContext?: StatContext & { lineValue: number };
+  books: BookLine[];
   units: 0.25 | 0.5 | 1;
 }
 
@@ -19,7 +25,9 @@ interface SavedBet {
   id: string;
   gameId: string; sport: string; sportKey: string;
   homeTeam: string; awayTeam: string; commenceTime: string;
-  side: string; market: 'h2h' | 'spreads' | 'totals';
+  side: string; market: 'h2h' | 'spreads' | 'totals' | 'props';
+  propMarket?: string;
+  playerName?: string;
   point?: number; bestOdds: number; edge: number; units: 0.25 | 0.5 | 1;
   savedAt: string;
   result?: 'win' | 'loss' | 'push';
@@ -50,18 +58,27 @@ const SPORT_COLOR: Record<string, string> = {
 };
 
 const MARKET_LABEL: Record<string, string> = {
-  h2h: 'Moneyline', spreads: 'Spread', totals: 'Total',
+  h2h: 'Moneyline', spreads: 'Spread', totals: 'Total', props: 'Player Prop',
 };
 
 const MARKET_COLOR: Record<string, string> = {
   h2h: 'text-violet-400 bg-violet-500/10 border-violet-500/20',
   spreads: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
   totals: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+  props: 'text-pink-400 bg-pink-500/10 border-pink-500/20',
 };
 
 const SPORT_KEYS_BY_LABEL: Record<string, string> = Object.fromEntries(SPORTS.map(s => [s.label, s.key]));
 const BANKROLL_KEY = 'schlima_bankroll_v2';
-const BETS_KEY    = 'schlima_bets_v1';
+const BETS_KEY     = 'schlima_bets_v1';
+
+// Strict filter thresholds
+const MIN_BOOKS_H2H  = 4;
+const MIN_BOOKS_MKT  = 3;
+const MIN_BOOKS_PROP = 2;
+const MIN_EDGE       = 0.035;
+const MIN_CONFIDENCE      = 48;
+const MIN_CONFIDENCE_PROP = 35;
 
 // ─── Math helpers ────────────────────────────────────────────────────────────
 
@@ -84,6 +101,34 @@ function fmtTime(iso: string) {
     : d.toDateString() === tomorrow.toDateString() ? 'Tomorrow'
     : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   return `${day} · ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function stdDev(vals: number[]): number {
+  if (vals.length < 2) return 0.5;
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+}
+
+// Composite confidence 0–100: edge quality (35) + book depth (25) + consensus (25) + vig efficiency (15)
+function calcConfidence(edge: number, numBooks: number, fairProbStd: number, avgVig: number): number {
+  const edgeScore = Math.min(Math.max(edge - 0.035, 0) / 0.085, 1) * 35;
+  const bookScore = Math.min(Math.max(numBooks - 4, 0) / 4, 1) * 25;
+  const conScore  = Math.max(1 - fairProbStd / 0.03, 0) * 25;
+  const vigScore  = Math.max(1 - Math.max(avgVig - 0.03, 0) / 0.06, 0) * 15;
+  return Math.round(edgeScore + bookScore + conScore + vigScore);
+}
+
+function confColor(c: number) {
+  return c >= 65 ? 'text-emerald-400' : c >= 50 ? 'text-amber-400' : 'text-zinc-400';
+}
+
+// Statistical boost: how strongly do player stats support this bet side (0–25 pts)
+// lineValue = (playerAvg - propLine) for Over, (propLine - playerAvg) for Under
+function statBoost(statCtx: StatContext, propLine: number, isOver: boolean): number {
+  const ref = statCtx.last10Avg ?? statCtx.avg;
+  const lineValue = isOver ? ref - propLine : propLine - ref;
+  // Normalise by line: +20% above/below = full 25 pts; negative = 0
+  return Math.round(Math.min(Math.max(propLine > 0 ? lineValue / propLine : 0, 0) / 0.20, 1) * 25);
 }
 
 // ─── Processing ──────────────────────────────────────────────────────────────
@@ -117,10 +162,24 @@ function pairLines(
   return pairs;
 }
 
-function avgFairProbs(pairs: Array<{ a: BookLine; b: BookLine }>): [number, number] {
-  let sumA = 0, sumB = 0;
-  for (const { a, b } of pairs) { const [fa, fb] = noVig(a.odds, b.odds); sumA += fa; sumB += fb; }
-  return [sumA / pairs.length, sumB / pairs.length];
+function fairProbsAnalysis(pairs: Array<{ a: BookLine; b: BookLine }>): {
+  avgA: number; avgB: number; samplesA: number[]; samplesB: number[]; avgVig: number;
+} {
+  const samplesA: number[] = [], samplesB: number[] = [];
+  let vigSum = 0;
+  for (const { a, b } of pairs) {
+    const [fa, fb] = noVig(a.odds, b.odds);
+    samplesA.push(fa);
+    samplesB.push(fb);
+    vigSum += imp(a.odds) + imp(b.odds) - 1;
+  }
+  const n = pairs.length;
+  return {
+    avgA: samplesA.reduce((s, v) => s + v, 0) / n,
+    avgB: samplesB.reduce((s, v) => s + v, 0) / n,
+    samplesA, samplesB,
+    avgVig: vigSum / n,
+  };
 }
 
 function collectLines(g: GameOdds, marketKey: string, sideName: string, matchPt?: number | null): BookLine[] {
@@ -134,15 +193,28 @@ function collectLines(g: GameOdds, marketKey: string, sideName: string, matchPt?
   return lines;
 }
 
-function buildPlay(g: GameOdds, market: 'h2h' | 'spreads' | 'totals', side: string, fairProb: number, allLines: BookLine[], point?: number): Play | null {
+function buildStrictPlay(
+  g: GameOdds,
+  market: 'h2h' | 'spreads' | 'totals',
+  side: string,
+  fairProb: number,
+  fairProbSamples: number[],
+  avgVig: number,
+  allLines: BookLine[],
+  point?: number,
+): Play | null {
   if (allLines.length === 0) return null;
   const best = allLines.reduce((b, x) => x.odds > b.odds ? x : b);
   const edge = fairProb - imp(best.odds);
-  if (edge <= 0) return null;
+  if (edge < MIN_EDGE) return null;
+  const std = stdDev(fairProbSamples);
+  const conf = calcConfidence(edge, allLines.length, std, avgVig);
+  if (conf < MIN_CONFIDENCE) return null;
   return {
     gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
-    commenceTime: g.commence_time, side, market, point, bestBook: best.book, bestOdds: best.odds,
-    impliedProb: imp(best.odds), fairProb, edge,
+    commenceTime: g.commence_time, side, market, point,
+    bestBook: best.book, bestOdds: best.odds,
+    impliedProb: imp(best.odds), fairProb, edge, confidence: conf,
     books: [...allLines].sort((a, b) => b.odds - a.odds),
     units: edge >= 0.06 ? 1 : edge >= 0.04 ? 0.5 : 0.25,
   };
@@ -153,24 +225,27 @@ function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
   for (const g of games) {
     if (new Date(g.commence_time) <= now) continue;
     const gamePlays: Play[] = [];
+    let rejectReason = '';
 
     const h2hPairs = pairLines(g, 'h2h', g.home_team, g.away_team);
-    if (h2hPairs.length >= 2) {
-      const [fairH, fairA] = avgFairProbs(h2hPairs);
-      const pH = buildPlay(g, 'h2h', g.home_team, fairH, collectLines(g, 'h2h', g.home_team));
-      const pA = buildPlay(g, 'h2h', g.away_team, fairA, collectLines(g, 'h2h', g.away_team));
+    if (h2hPairs.length >= MIN_BOOKS_H2H) {
+      const { avgA: fairH, avgB: fairA, samplesA, samplesB, avgVig } = fairProbsAnalysis(h2hPairs);
+      const pH = buildStrictPlay(g, 'h2h', g.home_team, fairH, samplesA, avgVig, collectLines(g, 'h2h', g.home_team));
+      const pA = buildStrictPlay(g, 'h2h', g.away_team, fairA, samplesB, avgVig, collectLines(g, 'h2h', g.away_team));
       if (pH) gamePlays.push(pH);
       if (pA) gamePlays.push(pA);
+    } else if (h2hPairs.length > 0) {
+      rejectReason = `Only ${h2hPairs.length} book${h2hPairs.length > 1 ? 's' : ''} — need ${MIN_BOOKS_H2H}+ for reliable consensus.`;
     }
 
     const homeSpreadPt = consensusPoint(g, 'spreads', g.home_team);
     const awaySpreadPt = consensusPoint(g, 'spreads', g.away_team);
     if (homeSpreadPt != null && awaySpreadPt != null) {
       const spreadPairs = pairLines(g, 'spreads', g.home_team, g.away_team, homeSpreadPt, awaySpreadPt);
-      if (spreadPairs.length >= 2) {
-        const [fairH, fairA] = avgFairProbs(spreadPairs);
-        const pH = buildPlay(g, 'spreads', `${g.home_team} ${fmtSpread(homeSpreadPt)}`, fairH, collectLines(g, 'spreads', g.home_team, homeSpreadPt), homeSpreadPt);
-        const pA = buildPlay(g, 'spreads', `${g.away_team} ${fmtSpread(awaySpreadPt)}`, fairA, collectLines(g, 'spreads', g.away_team, awaySpreadPt), awaySpreadPt);
+      if (spreadPairs.length >= MIN_BOOKS_MKT) {
+        const { avgA: fairH, avgB: fairA, samplesA, samplesB, avgVig } = fairProbsAnalysis(spreadPairs);
+        const pH = buildStrictPlay(g, 'spreads', `${g.home_team} ${fmtSpread(homeSpreadPt)}`, fairH, samplesA, avgVig, collectLines(g, 'spreads', g.home_team, homeSpreadPt), homeSpreadPt);
+        const pA = buildStrictPlay(g, 'spreads', `${g.away_team} ${fmtSpread(awaySpreadPt)}`, fairA, samplesB, avgVig, collectLines(g, 'spreads', g.away_team, awaySpreadPt), awaySpreadPt);
         if (pH) gamePlays.push(pH);
         if (pA) gamePlays.push(pA);
       }
@@ -179,10 +254,10 @@ function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
     const overPt = consensusPoint(g, 'totals', 'Over');
     if (overPt != null) {
       const totalPairs = pairLines(g, 'totals', 'Over', 'Under', overPt, overPt);
-      if (totalPairs.length >= 2) {
-        const [fairO, fairU] = avgFairProbs(totalPairs);
-        const pO = buildPlay(g, 'totals', `Over ${overPt}`, fairO, collectLines(g, 'totals', 'Over', overPt), overPt);
-        const pU = buildPlay(g, 'totals', `Under ${overPt}`, fairU, collectLines(g, 'totals', 'Under', overPt), overPt);
+      if (totalPairs.length >= MIN_BOOKS_MKT) {
+        const { avgA: fairO, avgB: fairU, samplesA, samplesB, avgVig } = fairProbsAnalysis(totalPairs);
+        const pO = buildStrictPlay(g, 'totals', `Over ${overPt}`, fairO, samplesA, avgVig, collectLines(g, 'totals', 'Over', overPt), overPt);
+        const pU = buildStrictPlay(g, 'totals', `Under ${overPt}`, fairU, samplesB, avgVig, collectLines(g, 'totals', 'Under', overPt), overPt);
         if (pO) gamePlays.push(pO);
         if (pU) gamePlays.push(pU);
       }
@@ -198,11 +273,129 @@ function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
         gameId: g.id, sport: g.sport_title, homeTeam: g.home_team, awayTeam: g.away_team,
         commenceTime: g.commence_time,
         homeML: bestH ? fmtOdds(bestH.odds) : '—', awayML: bestA ? fmtOdds(bestA.odds) : '—',
-        reason: h2hPairs.length < 2 ? 'Not enough books for accurate line comparison.' : 'No positive edge found across moneyline, spread, or total.',
+        reason: rejectReason || (h2hPairs.length < MIN_BOOKS_H2H
+          ? `Only ${h2hPairs.length} book${h2hPairs.length !== 1 ? 's' : ''} — need ${MIN_BOOKS_H2H}+ for reliable consensus.`
+          : `No play met threshold (≥3.5% edge, ${MIN_BOOKS_H2H}+ books h2h, ${MIN_BOOKS_MKT}+ spreads/totals, high consensus).`),
       });
     }
   }
-  return { plays: plays.sort((a, b) => b.edge - a.edge), rejects };
+  return { plays: plays.sort((a, b) => b.confidence - a.confidence), rejects };
+}
+
+const PROP_MARKET_NAMES: Record<string, string> = {
+  player_points: 'Points', player_rebounds: 'Rebounds', player_assists: 'Assists',
+  player_threes: '3-Pointers', pitcher_strikeouts: 'Strikeouts', batter_hits: 'Hits',
+  batter_home_runs: 'Home Runs', player_goals: 'Goals', player_shots_on_goal: 'Shots on Goal',
+  player_pass_yds: 'Pass Yds', player_rush_yds: 'Rush Yds',
+  player_reception_yds: 'Rec Yds', player_reception_tds: 'Rec TDs',
+};
+
+function propLabel(key: string): string {
+  return PROP_MARKET_NAMES[key] ?? key.replace(/player_/, '').replace(/_/g, ' ');
+}
+
+function processProps(propsGames: PropsGame[]): Play[] {
+  const plays: Play[] = [];
+  const now = new Date();
+
+  for (const game of propsGames) {
+    if (new Date(game.commence_time) <= now) continue;
+
+    interface PropGroup {
+      playerName: string; market: string; point: number;
+      pairs: Array<{ a: BookLine; b: BookLine }>;
+      overLines: BookLine[]; underLines: BookLine[];
+    }
+    const propGroups = new Map<string, PropGroup>();
+
+    for (const bm of game.bookmakers) {
+      for (const mkt of bm.markets) {
+        const byPlayerPt = new Map<string, { over?: number; under?: number }>();
+        for (const out of mkt.outcomes) {
+          if (!out.description || out.point == null) continue;
+          const k = `${out.description}|${out.point}`;
+          if (!byPlayerPt.has(k)) byPlayerPt.set(k, {});
+          const entry = byPlayerPt.get(k)!;
+          if (out.name === 'Over') entry.over = out.price;
+          else if (out.name === 'Under') entry.under = out.price;
+        }
+        for (const [k, sides] of byPlayerPt.entries()) {
+          if (sides.over == null || sides.under == null) continue;
+          const [playerName, ptStr] = k.split('|');
+          const point = parseFloat(ptStr);
+          const groupKey = `${game.id}|${mkt.key}|${playerName}|${point}`;
+          if (!propGroups.has(groupKey)) {
+            propGroups.set(groupKey, { playerName, market: mkt.key, point, pairs: [], overLines: [], underLines: [] });
+          }
+          const group = propGroups.get(groupKey)!;
+          const oLine: BookLine = { book: bm.title, odds: sides.over };
+          const uLine: BookLine = { book: bm.title, odds: sides.under };
+          group.pairs.push({ a: oLine, b: uLine });
+          group.overLines.push(oLine);
+          group.underLines.push(uLine);
+        }
+      }
+    }
+
+    for (const group of propGroups.values()) {
+      if (group.pairs.length < MIN_BOOKS_PROP) continue;
+      const { avgA: fairO, avgB: fairU, samplesA, samplesB, avgVig } = fairProbsAnalysis(group.pairs);
+      const lbl = propLabel(group.market);
+      const statCtxRaw = game.playerStats?.[`${group.playerName}|${group.market}`];
+
+      const bestOver = group.overLines.reduce((b, x) => x.odds > b.odds ? x : b);
+      const edgeO = fairO - imp(bestOver.odds);
+      if (edgeO >= MIN_EDGE) {
+        const marketConf = calcConfidence(edgeO, group.pairs.length, stdDev(samplesA), avgVig);
+        const sBoost = statCtxRaw ? statBoost(statCtxRaw, group.point, true) : 0;
+        const conf = Math.min(marketConf + sBoost, 100);
+        if (conf >= MIN_CONFIDENCE_PROP) {
+          const statContext = statCtxRaw
+            ? { ...statCtxRaw, lineValue: (statCtxRaw.last10Avg ?? statCtxRaw.avg) - group.point }
+            : undefined;
+          plays.push({
+            gameId: game.id, sport: game.sport_title,
+            homeTeam: game.home_team, awayTeam: game.away_team,
+            commenceTime: game.commence_time,
+            side: `Over ${group.point} ${lbl}`,
+            market: 'props', propMarket: group.market, playerName: group.playerName,
+            point: group.point, bestBook: bestOver.book, bestOdds: bestOver.odds,
+            impliedProb: imp(bestOver.odds), fairProb: fairO, edge: edgeO, confidence: conf,
+            statContext,
+            books: [...group.overLines].sort((a, b) => b.odds - a.odds),
+            units: edgeO >= 0.06 ? 1 : edgeO >= 0.04 ? 0.5 : 0.25,
+          });
+        }
+      }
+
+      const bestUnder = group.underLines.reduce((b, x) => x.odds > b.odds ? x : b);
+      const edgeU = fairU - imp(bestUnder.odds);
+      if (edgeU >= MIN_EDGE) {
+        const marketConf = calcConfidence(edgeU, group.pairs.length, stdDev(samplesB), avgVig);
+        const sBoost = statCtxRaw ? statBoost(statCtxRaw, group.point, false) : 0;
+        const conf = Math.min(marketConf + sBoost, 100);
+        if (conf >= MIN_CONFIDENCE_PROP) {
+          const statContext = statCtxRaw
+            ? { ...statCtxRaw, lineValue: group.point - (statCtxRaw.last10Avg ?? statCtxRaw.avg) }
+            : undefined;
+          plays.push({
+            gameId: game.id, sport: game.sport_title,
+            homeTeam: game.home_team, awayTeam: game.away_team,
+            commenceTime: game.commence_time,
+            side: `Under ${group.point} ${lbl}`,
+            market: 'props', propMarket: group.market, playerName: group.playerName,
+            point: group.point, bestBook: bestUnder.book, bestOdds: bestUnder.odds,
+            impliedProb: imp(bestUnder.odds), fairProb: fairU, edge: edgeU, confidence: conf,
+            statContext,
+            books: [...group.underLines].sort((a, b) => b.odds - a.odds),
+            units: edgeU >= 0.06 ? 1 : edgeU >= 0.04 ? 0.5 : 0.25,
+          });
+        }
+      }
+    }
+  }
+
+  return plays.sort((a, b) => b.confidence - a.confidence);
 }
 
 // ─── Bet storage ──────────────────────────────────────────────────────────────
@@ -219,6 +412,7 @@ function cleanOldBets(bets: SavedBet[]): SavedBet[] {
 // ─── Outcome determination ────────────────────────────────────────────────────
 
 function determineBetOutcome(bet: SavedBet, scores: GameScore[]): 'win' | 'loss' | 'push' | null {
+  if (bet.market === 'props') return null;
   const game = scores.find(s => s.id === bet.gameId);
   if (!game?.completed || !game.scores) return null;
   const homeScore = parseFloat(game.scores.find(s => s.name === game.home_team)?.score ?? '');
@@ -288,6 +482,12 @@ function PlayCard({ play, unitDollar }: { play: Play; unitDollar: number }) {
         <span className="text-xs text-zinc-600 shrink-0 ml-2">{fmtTime(play.commenceTime)}</span>
       </div>
       <div className="px-5 py-4">
+        {play.playerName && (
+          <div className="flex items-center gap-1.5 mb-2">
+            <Users size={12} className="text-pink-400" />
+            <span className="text-sm font-medium text-pink-300">{play.playerName}</span>
+          </div>
+        )}
         <div className="flex items-start justify-between mb-4">
           <p className="text-xl font-semibold text-zinc-100 leading-tight pr-4">{play.side}</p>
           <div className="text-right shrink-0">
@@ -300,7 +500,7 @@ function PlayCard({ play, unitDollar }: { play: Play; unitDollar: number }) {
             { label: 'FAIR',    value: pct(play.fairProb),    color: 'text-emerald-400' },
             { label: 'IMPLIED', value: pct(play.impliedProb), color: 'text-zinc-300'    },
             { label: 'EDGE',    value: `+${pct(play.edge)}`,  color: 'text-emerald-400' },
-            { label: 'SIZE',    value: `${play.units}u`,      color: 'text-zinc-300'    },
+            { label: 'CONF',    value: `${play.confidence}`,  color: confColor(play.confidence) },
           ].map(({ label, value, color }) => (
             <div key={label} className="bg-zinc-900 rounded-lg p-2.5 text-center">
               <p className="text-xs text-zinc-600 uppercase tracking-wider mb-1">{label}</p>
@@ -320,6 +520,31 @@ function PlayCard({ play, unitDollar }: { play: Play; unitDollar: number }) {
             </div>
           ))}
         </div>
+        {play.statContext && (
+          <div className="mt-3 pt-3 border-t border-zinc-800/60 space-y-1.5">
+            <p className="text-xs text-zinc-600 uppercase tracking-widest">Statistical context</p>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-zinc-900 rounded-lg p-2 text-center">
+                <p className="text-xs text-zinc-600 mb-0.5">Season avg</p>
+                <p className="font-mono text-xs font-semibold text-zinc-200">{play.statContext.avg.toFixed(1)}</p>
+              </div>
+              {play.statContext.last10Avg != null && (
+                <div className="bg-zinc-900 rounded-lg p-2 text-center">
+                  <p className="text-xs text-zinc-600 mb-0.5">Last 10</p>
+                  <p className={`font-mono text-xs font-semibold ${play.statContext.last10Avg > play.statContext.avg ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {play.statContext.last10Avg.toFixed(1)}
+                  </p>
+                </div>
+              )}
+              <div className="bg-zinc-900 rounded-lg p-2 text-center">
+                <p className="text-xs text-zinc-600 mb-0.5">vs line</p>
+                <p className={`font-mono text-xs font-semibold ${play.statContext.lineValue > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {play.statContext.lineValue > 0 ? '+' : ''}{play.statContext.lineValue.toFixed(1)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="mt-3 pt-3 border-t border-zinc-800/60 flex items-center justify-between">
           <span className="text-xs text-zinc-600">Recommended</span>
           <span className="text-xs font-mono text-zinc-400">{play.units}u = <span className="text-zinc-300">${(play.units * unitDollar).toFixed(0)}</span></span>
@@ -369,6 +594,7 @@ function BetResultCard({ bet }: { bet: SavedBet }) {
         <div className="flex items-center gap-2 flex-wrap">
           <SportBadge sportKey={sportKey} label={bet.sport} />
           <MarketBadge market={bet.market} />
+          {bet.playerName && <span className="text-xs text-pink-400">{bet.playerName}</span>}
         </div>
         {badge}
       </div>
@@ -397,29 +623,44 @@ export default function SportsBetting() {
   const [error, setError]     = useState<string | null>(null);
   const [bankroll, setBR]     = useState<Bankroll>(loadBankroll);
 
+  const [propsRaw, setPropsRaw]       = useState<PropsGame[] | null>(null);
+  const [loadingProps, setLoadingProps] = useState(false);
+  const [propsErr, setPropsErr]       = useState('');
+
   const [savedBets, setSavedBets] = useState<SavedBet[]>(() => cleanOldBets(loadBets()));
   const [loadingResults, setLoadingResults] = useState(false);
   const [resultsErr, setResultsErr] = useState('');
 
-  useEffect(() => { load(sport); }, [sport]);
+  useEffect(() => { load(sport); setPropsRaw(null); setPropsErr(''); }, [sport]);
 
-  // Auto-save any new plays to localStorage
   const { plays, rejects } = useMemo(
     () => rawData ? processGames(rawData) : { plays: [], rejects: [] },
     [rawData]
   );
 
+  const propsPlays = useMemo(
+    () => propsRaw ? processProps(propsRaw) : [],
+    [propsRaw]
+  );
+
+  const allPlays = useMemo(
+    () => [...plays, ...propsPlays].sort((a, b) => b.confidence - a.confidence),
+    [plays, propsPlays]
+  );
+
+  // Auto-save new plays to localStorage
   useEffect(() => {
-    if (plays.length === 0) return;
+    if (allPlays.length === 0) return;
     setSavedBets(prev => {
       const existingIds = new Set(prev.map(b => b.id));
-      const toAdd: SavedBet[] = plays
+      const toAdd: SavedBet[] = allPlays
         .filter(p => !existingIds.has(`${p.gameId}-${p.side}-${p.market}`))
         .map(p => ({
           id: `${p.gameId}-${p.side}-${p.market}`,
           gameId: p.gameId, sport: p.sport, sportKey: SPORT_KEYS_BY_LABEL[p.sport] ?? '',
           homeTeam: p.homeTeam, awayTeam: p.awayTeam, commenceTime: p.commenceTime,
           side: p.side, market: p.market, point: p.point,
+          propMarket: p.propMarket, playerName: p.playerName,
           bestOdds: p.bestOdds, edge: p.edge, units: p.units,
           savedAt: new Date().toISOString(),
         }));
@@ -428,7 +669,7 @@ export default function SportsBetting() {
       saveBets(updated);
       return updated;
     });
-  }, [plays]);
+  }, [allPlays]);
 
   // Auto-check results when Results tab opens
   useEffect(() => {
@@ -448,11 +689,22 @@ export default function SportsBetting() {
     } finally { setLoading(false); }
   }
 
+  async function loadProps() {
+    if (!token) return;
+    setLoadingProps(true); setPropsErr(''); setPropsRaw(null);
+    try {
+      setPropsRaw(await fetchProps(token, sport));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to fetch props';
+      setPropsErr(msg.includes('Standard plan') ? msg : `Props unavailable: ${msg}`);
+    } finally { setLoadingProps(false); }
+  }
+
   async function checkResults() {
     if (!token || loadingResults) return;
     setLoadingResults(true); setResultsErr('');
     const now = new Date();
-    const pending = savedBets.filter(b => !b.result && new Date(b.commenceTime) <= now);
+    const pending = savedBets.filter(b => !b.result && b.market !== 'props' && new Date(b.commenceTime) <= now);
     if (pending.length === 0) { setLoadingResults(false); return; }
 
     const sportKeys = [...new Set(pending.map(b => b.sportKey))].filter(Boolean);
@@ -462,7 +714,7 @@ export default function SportsBetting() {
 
       setSavedBets(prev => {
         const updated = prev.map(bet => {
-          if (bet.result || new Date(bet.commenceTime) > now) return bet;
+          if (bet.result || bet.market === 'props' || new Date(bet.commenceTime) > now) return bet;
           const outcome = determineBetOutcome(bet, scoreMap[bet.sportKey] ?? []);
           if (!outcome) return bet;
           return { ...bet, result: outcome, resolvedAt: new Date().toISOString() };
@@ -499,7 +751,7 @@ export default function SportsBetting() {
     };
   }, [savedBets]);
 
-  const pendingCount = savedBets.filter(b => !b.result && new Date(b.commenceTime) <= new Date()).length;
+  const pendingCount = savedBets.filter(b => !b.result && b.market !== 'props' && new Date(b.commenceTime) <= new Date()).length;
 
   const profit = bankroll.current - bankroll.starting;
   const roi    = bankroll.starting > 0 ? (profit / bankroll.starting) * 100 : 0;
@@ -515,7 +767,7 @@ export default function SportsBetting() {
           <Activity size={20} className="text-violet-400" />
           <div>
             <h1 className="text-xl font-semibold text-zinc-100">Sports Betting</h1>
-            <p className="text-xs text-zinc-600">Live odds · Moneyline, spreads & totals · All positive edges</p>
+            <p className="text-xs text-zinc-600">Strict consensus · 4+ books · 3.5%+ edge · Confidence-ranked</p>
           </div>
         </div>
         <button onClick={() => load(sport)} disabled={loading}
@@ -540,7 +792,7 @@ export default function SportsBetting() {
       {/* Tab bar */}
       <div className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-xl mb-8">
         {([
-          { id: 'plays'    as Tab, label: 'Best Bets', icon: TrendingUp, count: plays.length },
+          { id: 'plays'    as Tab, label: 'Best Bets', icon: TrendingUp, count: allPlays.length },
           { id: 'no-bets'  as Tab, label: 'No Edge',   icon: Ban,        count: rejects.length },
           { id: 'results'  as Tab, label: 'Results',   icon: Trophy,     count: pendingCount > 0 ? pendingCount : null, countAmber: true },
           { id: 'bankroll' as Tab, label: 'Bankroll',  icon: DollarSign, count: null },
@@ -588,14 +840,30 @@ export default function SportsBetting() {
       {!loading && tab === 'plays' && (
         <div className="space-y-4 animate-fade-in">
           {!rawData && !error && <div className="card p-12 text-center text-zinc-600 text-sm">Select a sport to load odds.</div>}
-          {rawData && plays.length === 0 && (
-            <div className="card p-12 text-center">
-              <Ban size={28} className="text-zinc-700 mx-auto mb-3" />
-              <p className="text-zinc-400 font-medium mb-1">No edges found</p>
-              <p className="text-zinc-600 text-sm">Books are aligned across all markets.</p>
+
+          {/* Props loader */}
+          {rawData && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={loadProps}
+                disabled={loadingProps}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-pink-500/50 transition-colors disabled:opacity-40"
+              >
+                <Users size={13} className={loadingProps ? 'animate-pulse text-pink-400' : 'text-pink-400'} />
+                {loadingProps ? 'Loading props...' : propsRaw ? `${propsPlays.length} prop edge${propsPlays.length !== 1 ? 's' : ''} found` : 'Load Player Props'}
+              </button>
+              {propsErr && <p className="text-xs text-amber-400">{propsErr}</p>}
             </div>
           )}
-          {plays.map(p => <PlayCard key={`${p.gameId}-${p.side}-${p.market}`} play={p} unitDollar={bankroll.unit} />)}
+
+          {rawData && allPlays.length === 0 && (
+            <div className="card p-12 text-center">
+              <Ban size={28} className="text-zinc-700 mx-auto mb-3" />
+              <p className="text-zinc-400 font-medium mb-1">No high-confidence edges found</p>
+              <p className="text-zinc-600 text-sm">Need 4+ books, ≥3.5% edge, and strong consensus across all books.</p>
+            </div>
+          )}
+          {allPlays.map(p => <PlayCard key={`${p.gameId}-${p.side}-${p.market}`} play={p} unitDollar={bankroll.unit} />)}
         </div>
       )}
 
