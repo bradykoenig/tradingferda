@@ -696,7 +696,11 @@ export default function SportsBetting() {
       setPropsRaw(await fetchProps(token, sport));
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to fetch props';
-      setPropsErr(msg.includes('Standard plan') ? msg : `Props unavailable: ${msg}`);
+      if (msg.includes('Standard plan') || msg.includes('upgrade')) {
+        setPropsErr('Standard plan required ($30/mo) — visit the-odds-api.com');
+      } else {
+        setPropsErr(msg);
+      }
     } finally { setLoadingProps(false); }
   }
 
@@ -817,8 +821,15 @@ export default function SportsBetting() {
         <div className="card p-5 border-red-500/20 bg-red-500/5 flex items-start gap-3 mb-6">
           <AlertCircle size={16} className="text-red-400 mt-0.5 shrink-0" />
           <div>
-            <p className="text-sm text-red-400 font-medium mb-1">{error.includes('not configured') ? 'Odds API not set up yet' : 'Failed to load odds'}</p>
-            <p className="text-xs text-zinc-500">{error.includes('not configured') ? 'Add your ODDS_API_KEY secret to the Cloudflare Worker.' : error}</p>
+            <p className="text-sm text-red-400 font-medium mb-1">
+              {error.includes('not configured') ? 'Odds API not set up yet'
+                : error.includes('credits exhausted') || error.includes('quota') ? 'API credits exhausted'
+                : error.includes('Invalid Odds API') ? 'Invalid API key'
+                : 'Failed to load odds'}
+            </p>
+            <p className="text-xs text-zinc-500">
+              {error.includes('not configured') ? 'Add your ODDS_API_KEY secret to the Cloudflare Worker.' : error}
+            </p>
           </div>
         </div>
       )}

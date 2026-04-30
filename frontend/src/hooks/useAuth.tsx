@@ -31,6 +31,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, [token]);
 
+  useEffect(() => {
+    const handler = () => {
+      localStorage.removeItem(TOKEN_KEY);
+      setTokenState(null);
+    };
+    window.addEventListener('auth:expired', handler);
+    return () => window.removeEventListener('auth:expired', handler);
+  }, []);
+
   const setToken = useCallback((t: string) => {
     localStorage.setItem(TOKEN_KEY, t);
     setTokenState(t);

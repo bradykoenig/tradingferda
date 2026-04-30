@@ -7,7 +7,7 @@ export interface Env {
 }
 
 const SALT = 'schlima-site-v1-salt';
-const JWT_EXPIRY = 60 * 60 * 24;
+const JWT_EXPIRY = 60 * 60 * 24 * 7; // 7 days
 
 // ─── CORS / helpers ────────────────────────────────────────────────────────────
 
@@ -417,6 +417,8 @@ export default {
           .slice(0, 10);
 
         // Fetch prop odds for all games in parallel
+        // Track plan errors separately so we can give a clear error when all fetches fail
+        let planLimited = false;
         const rawProps = await Promise.all(upcoming.map(async (event) => {
           const propUrl = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/events/${event.id}/odds/`);
           propUrl.searchParams.set('apiKey', env.ODDS_API_KEY);
@@ -425,12 +427,23 @@ export default {
           propUrl.searchParams.set('oddsFormat', 'american');
           try {
             const res = await fetch(propUrl.toString());
+            if (res.status === 422 || res.status === 402 || res.status === 401) {
+              planLimited = true;
+              return null;
+            }
             if (!res.ok) return null;
             const data = await res.json() as { bookmakers?: Array<{ title: string; markets: Array<{ key: string; outcomes: Array<{ name: string; description?: string; price: number; point?: number }> }> }> };
             return { ...event, bookmakers: data.bookmakers ?? [] };
           } catch { return null; }
         }));
         const propsData = rawProps.filter((g): g is NonNullable<typeof g> => g !== null);
+
+        // If every event failed due to a plan limitation, tell the frontend clearly
+        if (planLimited && propsData.length === 0) {
+          return json({
+            error: 'Player props require Odds API Standard plan ($30/mo). Visit the-odds-api.com to upgrade.',
+          }, 402, cors);
+        }
 
         // Collect unique player/market combos for stat enrichment
         const statRequests: Array<{ playerName: string; market: string }> = [];
@@ -483,7 +496,15 @@ export default {
       oddsUrl.searchParams.set('oddsFormat', 'american');
       try {
         const res = await fetch(oddsUrl.toString());
-        if (!res.ok) return json({ error: 'Odds API error' }, 502, cors);
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({})) as { message?: string; error_code?: string };
+          const msg = errBody.message ?? '';
+          if (res.status === 401) return json({ error: 'Invalid Odds API key. Check your ODDS_API_KEY secret.' }, 502, cors);
+          if (res.status === 402 || msg.toLowerCase().includes('usage') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+            return json({ error: 'Odds API monthly credits exhausted. Visit the-odds-api.com to upgrade or wait until next month.' }, 402, cors);
+          }
+          return json({ error: msg || 'Odds API error' }, 502, cors);
+        }
         const data = await res.json();
         const body = JSON.stringify(data);
         await cache.put(cacheKey, new Response(body, {

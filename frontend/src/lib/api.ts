@@ -1,5 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
 
+function notifyIfUnauthorized(res: Response) {
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('auth:expired'));
+}
+
 export async function login(username: string, password: string): Promise<string> {
   const res = await fetch(`${API_BASE}/login`, {
     method: 'POST',
@@ -82,6 +86,7 @@ export async function fetchStockMetrics(token: string, symbol: string): Promise<
   const res = await fetch(`${API_BASE}/stock/metrics?symbol=${encodeURIComponent(symbol)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) {
     const d = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(d.error ?? 'Failed to fetch stock data');
@@ -93,6 +98,7 @@ export async function fetchStockQuotes(token: string, symbols: string[]): Promis
   const res = await fetch(`${API_BASE}/stock/quotes?symbols=${symbols.join(',')}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) throw new Error('Failed to fetch quotes');
   return res.json() as Promise<DTQuote[]>;
 }
@@ -101,6 +107,7 @@ export async function generateLTPick(token: string): Promise<GeneratedLTPick> {
   const res = await fetch(`${API_BASE}/stock/generate-pick?type=longterm`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) {
     const d = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(d.error ?? 'Failed to generate pick');
@@ -112,6 +119,7 @@ export async function generateDTPick(token: string): Promise<GeneratedDTPick> {
   const res = await fetch(`${API_BASE}/stock/generate-pick?type=daytrading`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) {
     const d = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(d.error ?? 'Failed to generate pick');
@@ -134,6 +142,7 @@ export async function fetchScores(token: string, sport: string): Promise<GameSco
   const res = await fetch(`${API_BASE}/scores?sport=${encodeURIComponent(sport)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) throw new Error('Failed to fetch scores');
   return res.json() as Promise<GameScore[]>;
 }
@@ -145,13 +154,14 @@ export interface StatContext {
 }
 
 export interface PropsGame extends GameOdds {
-  playerStats?: Record<string, StatContext>;  // key: "PlayerName|marketKey"
+  playerStats?: Record<string, StatContext>;
 }
 
 export async function fetchProps(token: string, sport: string): Promise<PropsGame[]> {
   const res = await fetch(`${API_BASE}/props?sport=${encodeURIComponent(sport)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(data.error ?? 'Failed to fetch props');
@@ -163,6 +173,7 @@ export async function fetchOdds(token: string, sport: string): Promise<GameOdds[
   const res = await fetch(`${API_BASE}/odds?sport=${encodeURIComponent(sport)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  notifyIfUnauthorized(res);
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(data.error ?? 'Failed to fetch odds');
