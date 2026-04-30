@@ -396,6 +396,15 @@ export default {
       if (authErr) return authErr;
       if (!env.ODDS_API_KEY) return json({ error: 'Odds API not configured' }, 503, cors);
       const sport = url.searchParams.get('sport') ?? 'basketball_nba';
+
+      // 4-hour server-side cache shared across all users
+      const propsCache = caches.default;
+      const propsCacheKey = new Request(`https://cache.schlima/props/${sport}`);
+      const propsCached = await propsCache.match(propsCacheKey);
+      if (propsCached) {
+        const body = await propsCached.text();
+        return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
+      }
       const propMarketsMap: Record<string, string> = {
         basketball_nba: 'player_points,player_rebounds,player_assists,player_threes',
         baseball_mlb: 'batter_hits,pitcher_strikeouts,batter_home_runs',
@@ -466,9 +475,11 @@ export default {
 
         // Attach the shared stat map to every game so the frontend can use it
         const enriched = propsData.map(game => ({ ...game, playerStats }));
-        return new Response(JSON.stringify(enriched), {
-          headers: { ...cors, 'Content-Type': 'application/json' },
-        });
+        const propsBody = JSON.stringify(enriched);
+        await propsCache.put(propsCacheKey, new Response(propsBody, {
+          headers: { 'Cache-Control': 'public, max-age=14400', 'Content-Type': 'application/json' },
+        })).catch(() => {});
+        return new Response(propsBody, { headers: { ...cors, 'Content-Type': 'application/json' } });
       } catch {
         return json({ error: 'Failed to fetch player props' }, 502, cors);
       }
@@ -499,16 +510,16 @@ export default {
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({})) as { message?: string; error_code?: string };
           const msg = errBody.message ?? '';
-          if (res.status === 401) return json({ error: 'Invalid Odds API key. Check your ODDS_API_KEY secret.' }, 502, cors);
-          if (res.status === 402 || msg.toLowerCase().includes('usage') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
-            return json({ error: 'Odds API monthly credits exhausted. Visit the-odds-api.com to upgrade or wait until next month.' }, 402, cors);
+          if (errBody.error_code === 'OUT_OF_USAGE_CREDITS' || res.status === 402 || msg.toLowerCase().includes('usage') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('limit')) {
+            return json({ error: 'Odds API monthly credits exhausted. Upgrade at the-odds-api.com or wait until next month.' }, 402, cors);
           }
+          if (res.status === 401) return json({ error: 'Invalid Odds API key. Check your ODDS_API_KEY secret.' }, 502, cors);
           return json({ error: msg || 'Odds API error' }, 502, cors);
         }
         const data = await res.json();
         const body = JSON.stringify(data);
         await cache.put(cacheKey, new Response(body, {
-          headers: { 'Cache-Control': 'public, max-age=1200', 'Content-Type': 'application/json' },
+          headers: { 'Cache-Control': 'public, max-age=14400', 'Content-Type': 'application/json' },
         }));
         return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
       } catch {

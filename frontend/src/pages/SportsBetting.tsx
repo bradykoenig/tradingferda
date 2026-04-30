@@ -619,19 +619,17 @@ export default function SportsBetting() {
   const [sport, setSport]     = useState('basketball_nba');
   const [tab, setTab]         = useState<Tab>('plays');
   const [rawData, setRawData] = useState<GameOdds[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [bankroll, setBR]     = useState<Bankroll>(loadBankroll);
 
-  const [propsRaw, setPropsRaw]       = useState<PropsGame[] | null>(null);
-  const [loadingProps, setLoadingProps] = useState(false);
-  const [propsErr, setPropsErr]       = useState('');
+  const [propsRaw, setPropsRaw] = useState<PropsGame[] | null>(null);
 
   const [savedBets, setSavedBets] = useState<SavedBet[]>(() => cleanOldBets(loadBets()));
   const [loadingResults, setLoadingResults] = useState(false);
   const [resultsErr, setResultsErr] = useState('');
 
-  useEffect(() => { load(sport); setPropsRaw(null); setPropsErr(''); }, [sport]);
+  useEffect(() => { load(sport); }, [sport]);
 
   const { plays, rejects } = useMemo(
     () => rawData ? processGames(rawData) : { plays: [], rejects: [] },
@@ -681,27 +679,15 @@ export default function SportsBetting() {
 
   async function load(s: string) {
     if (!token) return;
-    setLoading(true); setError(null); setRawData(null);
-    try {
-      setRawData(await fetchOdds(token, s));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch odds');
-    } finally { setLoading(false); }
-  }
-
-  async function loadProps() {
-    if (!token) return;
-    setLoadingProps(true); setPropsErr(''); setPropsRaw(null);
-    try {
-      setPropsRaw(await fetchProps(token, sport));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to fetch props';
-      if (msg.includes('Standard plan') || msg.includes('upgrade')) {
-        setPropsErr('Standard plan required ($30/mo) — visit the-odds-api.com');
-      } else {
-        setPropsErr(msg);
-      }
-    } finally { setLoadingProps(false); }
+    setLoading(true); setError(null); setRawData(null); setPropsRaw(null);
+    const [oddsRes, propsRes] = await Promise.allSettled([
+      fetchOdds(token, s),
+      fetchProps(token, s),
+    ]);
+    if (oddsRes.status === 'fulfilled') setRawData(oddsRes.value);
+    else setError(oddsRes.reason instanceof Error ? oddsRes.reason.message : 'Failed to fetch odds');
+    if (propsRes.status === 'fulfilled') setPropsRaw(propsRes.value);
+    setLoading(false);
   }
 
   async function checkResults() {
@@ -850,23 +836,6 @@ export default function SportsBetting() {
       {/* ── Best Bets tab ── */}
       {!loading && tab === 'plays' && (
         <div className="space-y-4 animate-fade-in">
-          {!rawData && !error && <div className="card p-12 text-center text-zinc-600 text-sm">Select a sport to load odds.</div>}
-
-          {/* Props loader */}
-          {rawData && (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={loadProps}
-                disabled={loadingProps}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-pink-500/50 transition-colors disabled:opacity-40"
-              >
-                <Users size={13} className={loadingProps ? 'animate-pulse text-pink-400' : 'text-pink-400'} />
-                {loadingProps ? 'Loading props...' : propsRaw ? `${propsPlays.length} prop edge${propsPlays.length !== 1 ? 's' : ''} found` : 'Load Player Props'}
-              </button>
-              {propsErr && <p className="text-xs text-amber-400">{propsErr}</p>}
-            </div>
-          )}
-
           {rawData && allPlays.length === 0 && (
             <div className="card p-12 text-center">
               <Ban size={28} className="text-zinc-700 mx-auto mb-3" />
