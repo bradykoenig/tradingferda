@@ -477,7 +477,7 @@ export default {
         const enriched = propsData.map(game => ({ ...game, playerStats }));
         const propsBody = JSON.stringify(enriched);
         await propsCache.put(propsCacheKey, new Response(propsBody, {
-          headers: { 'Cache-Control': 'public, max-age=14400', 'Content-Type': 'application/json' },
+          headers: { 'Cache-Control': 'public, max-age=86400', 'Content-Type': 'application/json' },
         })).catch(() => {});
         return new Response(propsBody, { headers: { ...cors, 'Content-Type': 'application/json' } });
       } catch {
@@ -519,7 +519,7 @@ export default {
         const data = await res.json();
         const body = JSON.stringify(data);
         await cache.put(cacheKey, new Response(body, {
-          headers: { 'Cache-Control': 'public, max-age=14400', 'Content-Type': 'application/json' },
+          headers: { 'Cache-Control': 'public, max-age=86400', 'Content-Type': 'application/json' },
         }));
         return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
       } catch {

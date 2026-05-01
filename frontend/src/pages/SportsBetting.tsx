@@ -45,9 +45,9 @@ interface Bankroll { starting: number; current: number; unit: number; wins: numb
 
 const SPORTS = [
   { key: 'basketball_nba', label: 'NBA' },
-  { key: 'baseball_mlb', label: 'MLB' },
-  { key: 'icehockey_nhl', label: 'NHL' },
-  { key: 'americanfootball_nfl', label: 'NFL' },
+  { key: 'baseball_mlb',   label: 'MLB' },
+  { key: 'icehockey_nhl',  label: 'NHL' },
+  // NFL re-enable in September when season starts
 ];
 
 const SPORT_COLOR: Record<string, string> = {
@@ -72,13 +72,12 @@ const SPORT_KEYS_BY_LABEL: Record<string, string> = Object.fromEntries(SPORTS.ma
 const BANKROLL_KEY = 'schlima_bankroll_v2';
 const BETS_KEY     = 'schlima_bets_v1';
 
-// Strict filter thresholds
-const MIN_BOOKS_H2H  = 4;
-const MIN_BOOKS_MKT  = 3;
+const MIN_BOOKS_H2H  = 3;
+const MIN_BOOKS_MKT  = 2;
 const MIN_BOOKS_PROP = 2;
-const MIN_EDGE       = 0.035;
-const MIN_CONFIDENCE      = 48;
-const MIN_CONFIDENCE_PROP = 35;
+const MIN_EDGE       = 0.025;
+const MIN_CONFIDENCE      = 30;
+const MIN_CONFIDENCE_PROP = 22;
 
 // ─── Math helpers ────────────────────────────────────────────────────────────
 
@@ -110,16 +109,17 @@ function stdDev(vals: number[]): number {
 }
 
 // Composite confidence 0–100: edge quality (35) + book depth (25) + consensus (25) + vig efficiency (15)
+// Calibrated for typical 3-6 book markets with 2.5-8% edges
 function calcConfidence(edge: number, numBooks: number, fairProbStd: number, avgVig: number): number {
-  const edgeScore = Math.min(Math.max(edge - 0.035, 0) / 0.085, 1) * 35;
-  const bookScore = Math.min(Math.max(numBooks - 4, 0) / 4, 1) * 25;
-  const conScore  = Math.max(1 - fairProbStd / 0.03, 0) * 25;
-  const vigScore  = Math.max(1 - Math.max(avgVig - 0.03, 0) / 0.06, 0) * 15;
+  const edgeScore = Math.min(Math.max(edge - 0.02, 0) / 0.07, 1) * 35;
+  const bookScore = Math.min(Math.max(numBooks - 3, 0) / 5, 1) * 25;
+  const conScore  = Math.max(1 - fairProbStd / 0.05, 0) * 25;
+  const vigScore  = Math.max(1 - Math.max(avgVig - 0.04, 0) / 0.08, 0) * 15;
   return Math.round(edgeScore + bookScore + conScore + vigScore);
 }
 
 function confColor(c: number) {
-  return c >= 65 ? 'text-emerald-400' : c >= 50 ? 'text-amber-400' : 'text-zinc-400';
+  return c >= 55 ? 'text-emerald-400' : c >= 38 ? 'text-amber-400' : 'text-zinc-400';
 }
 
 // Statistical boost: how strongly do player stats support this bet side (0–25 pts)
@@ -216,7 +216,7 @@ function buildStrictPlay(
     bestBook: best.book, bestOdds: best.odds,
     impliedProb: imp(best.odds), fairProb, edge, confidence: conf,
     books: [...allLines].sort((a, b) => b.odds - a.odds),
-    units: edge >= 0.06 ? 1 : edge >= 0.04 ? 0.5 : 0.25,
+    units: edge >= 0.05 ? 1 : edge >= 0.035 ? 0.5 : 0.25,
   };
 }
 
@@ -275,7 +275,7 @@ function processGames(games: GameOdds[]): { plays: Play[]; rejects: Reject[] } {
         homeML: bestH ? fmtOdds(bestH.odds) : '—', awayML: bestA ? fmtOdds(bestA.odds) : '—',
         reason: rejectReason || (h2hPairs.length < MIN_BOOKS_H2H
           ? `Only ${h2hPairs.length} book${h2hPairs.length !== 1 ? 's' : ''} — need ${MIN_BOOKS_H2H}+ for reliable consensus.`
-          : `No play met threshold (≥3.5% edge, ${MIN_BOOKS_H2H}+ books h2h, ${MIN_BOOKS_MKT}+ spreads/totals, high consensus).`),
+          : `No play met threshold (≥2.5% edge, ${MIN_BOOKS_H2H}+ books h2h, ${MIN_BOOKS_MKT}+ spreads/totals, confidence ≥30).`),
       });
     }
   }
@@ -757,7 +757,7 @@ export default function SportsBetting() {
           <Activity size={20} className="text-violet-400" />
           <div>
             <h1 className="text-xl font-semibold text-zinc-100">Sports Betting</h1>
-            <p className="text-xs text-zinc-600">Strict consensus · 4+ books · 3.5%+ edge · Confidence-ranked</p>
+            <p className="text-xs text-zinc-600">Consensus · 3+ books · 2.5%+ edge · Confidence-ranked</p>
           </div>
         </div>
         <button onClick={() => load(sport)} disabled={loading}
@@ -836,11 +836,18 @@ export default function SportsBetting() {
       {/* ── Best Bets tab ── */}
       {!loading && tab === 'plays' && (
         <div className="space-y-4 animate-fade-in">
-          {rawData && allPlays.length === 0 && (
+          {rawData && rawData.length === 0 && (
+            <div className="card p-12 text-center">
+              <Clock size={28} className="text-zinc-700 mx-auto mb-3" />
+              <p className="text-zinc-400 font-medium mb-1">No games scheduled</p>
+              <p className="text-zinc-600 text-sm">Check back when the season is active.</p>
+            </div>
+          )}
+          {rawData && rawData.length > 0 && allPlays.length === 0 && (
             <div className="card p-12 text-center">
               <Ban size={28} className="text-zinc-700 mx-auto mb-3" />
               <p className="text-zinc-400 font-medium mb-1">No high-confidence edges found</p>
-              <p className="text-zinc-600 text-sm">Need 4+ books, ≥3.5% edge, and strong consensus across all books.</p>
+              <p className="text-zinc-600 text-sm">Need 3+ books, ≥2.5% edge, and reasonable consensus across all books.</p>
             </div>
           )}
           {allPlays.map(p => <PlayCard key={`${p.gameId}-${p.side}-${p.market}`} play={p} unitDollar={bankroll.unit} />)}
