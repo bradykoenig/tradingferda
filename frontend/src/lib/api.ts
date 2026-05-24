@@ -86,6 +86,7 @@ export interface GeneratedDTPick {
   top: DTTopPick | null;
   candidates: DTCandidate[];
   ai_setup: string;
+  mode?: 'live' | 'watchlist' | 'closed';
   message?: string;
 }
 export interface Candle {

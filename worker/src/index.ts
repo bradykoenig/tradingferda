@@ -106,7 +106,12 @@ interface YFHistory { closes: number[]; highs: number[]; lows: number[]; opens: 
 
 async function yfFetch<T>(url: string): Promise<T | null> {
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Schlima/1.0)', 'Accept': 'application/json' } });
+    const res = await fetch(url, { headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://finance.yahoo.com/',
+    } });
     if (!res.ok) return null;
     return res.json() as Promise<T>;
   } catch { return null; }
@@ -787,11 +792,8 @@ export default {
           const volRatio = avgVol > 0 ? q.regularMarketVolume / avgVol : 1;
           const gap      = q.regularMarketPreviousClose > 0 ? ((q.regularMarketOpen - q.regularMarketPreviousClose) / q.regularMarketPreviousClose) * 100 : 0;
 
-          // Must be moving up with confirmed volume — no short setups for simplicity
-          if (q.regularMarketChangePercent < 1.0 || volRatio < 1.5) continue;
-
           // Score: momentum (30) + volume confirmation (30) + RSI zone 40-70 (25) + gap (15)
-          const momentumScore = Math.min(q.regularMarketChangePercent / 6, 1) * 30;
+          const momentumScore = Math.min(Math.max(q.regularMarketChangePercent, 0) / 6, 1) * 30;
           const volumeScore   = Math.min(Math.max(volRatio - 1, 0) / 4, 1) * 30;
           const rsiScore      = rsi >= 40 && rsi <= 70 ? 25 : rsi > 70 ? Math.max(25 - (rsi - 70) * 1.5, 0) : Math.max(25 - (40 - rsi), 0);
           const gapScore      = Math.min(Math.abs(gap) / 5, 1) * 15;
@@ -799,12 +801,17 @@ export default {
         }
         candidates.sort((a, b) => b.score - a.score);
 
-        if (!candidates.length) {
-          const msg = JSON.stringify({ top: null, candidates: [], ai_setup: '', message: 'No active setups right now. Markets may be closed or low-volatility.' });
+        // Two-pass: prefer confirmed live movers; fall back to watchlist if market is closed/flat
+        const livePass = candidates.filter(c => c.q.regularMarketChangePercent >= 1.0 && c.volRatio >= 1.5);
+        const finalCandidates = livePass.length > 0 ? livePass : candidates.filter(c => c.score > 10);
+        const mode = livePass.length > 0 ? 'live' : 'watchlist';
+
+        if (!finalCandidates.length) {
+          const msg = JSON.stringify({ top: null, candidates: [], ai_setup: '', mode: 'closed', message: 'No stocks found. Markets may be closed or data is unavailable.' });
           return new Response(msg, { headers: { ...cors, 'Content-Type': 'application/json' } });
         }
 
-        const best = candidates[0], bq = best.q;
+        const best = finalCandidates[0], bq = best.q;
         const atr    = best.atr > 0 ? best.atr : bq.regularMarketPrice * 0.02;
         const entry  = parseFloat(bq.regularMarketPrice.toFixed(2));
         const stop   = parseFloat(Math.max(bq.regularMarketDayLow, entry - atr).toFixed(2));
@@ -822,8 +829,9 @@ export default {
         const toQuote = ({ q }: DTCandidate) => ({ symbol: q.symbol, c: q.regularMarketPrice, d: q.regularMarketChange, dp: q.regularMarketChangePercent, h: q.regularMarketDayHigh, l: q.regularMarketDayLow, o: q.regularMarketOpen, pc: q.regularMarketPreviousClose });
         const body = JSON.stringify({
           top: { ...toQuote(best), entry, stop, target, rsi: best.rsi, atr: parseFloat(atr.toFixed(2)), volRatio: parseFloat(best.volRatio.toFixed(2)), score: Math.round(best.score), gap: parseFloat(best.gap.toFixed(2)) },
-          candidates: candidates.slice(0, 8).map(c => ({ ...toQuote(c), rsi: c.rsi, volRatio: parseFloat(c.volRatio.toFixed(2)), score: Math.round(c.score) })),
+          candidates: finalCandidates.slice(0, 8).map(c => ({ ...toQuote(c), rsi: c.rsi, volRatio: parseFloat(c.volRatio.toFixed(2)), score: Math.round(c.score) })),
           ai_setup,
+          mode,
         });
         await cache.put(dtKey, new Response(body, { headers: { 'Cache-Control': 'public, max-age=900', 'Content-Type': 'application/json' } })).catch(() => {});
         return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
