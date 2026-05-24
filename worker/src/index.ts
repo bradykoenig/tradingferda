@@ -772,12 +772,14 @@ export default {
         const seen2 = new Set<string>();
         const dtUniverse: YFQuote[] = [];
         for (const q of [...actives, ...gainers]) {
-          if (!seen2.has(q.symbol) && q.regularMarketPrice >= 3 && q.regularMarketPrice <= 500) {
+          // $10 floor: no penny stocks (wide spreads, manipulation, unpredictable)
+          // $200 cap: accessible for small accounts to buy at least 1 share
+          if (!seen2.has(q.symbol) && q.regularMarketPrice >= 10 && q.regularMarketPrice <= 200) {
             seen2.add(q.symbol); dtUniverse.push(q);
           }
         }
 
-        // Fetch 1-month history for RSI + ATR + volume ratio
+        // Fetch 1-month daily history for RSI, ATR, SMA trend, avg volume
         const hists = await Promise.all(dtUniverse.slice(0, 50).map(q => yfHistory(q.symbol, '1mo', cache, 600)));
 
         interface DTCandidate { q: YFQuote; rsi: number; atr: number; volRatio: number; gap: number; score: number }
@@ -785,25 +787,70 @@ export default {
 
         for (let i = 0; i < dtUniverse.length && i < 50; i++) {
           const q = dtUniverse[i], h = hists[i];
-          if (h.closes.length < 5) continue;
-          const rsi      = calcRSI(h.closes);
-          const atr      = calcATR(h.highs, h.lows, h.closes);
-          const avgVol   = sma(h.volumes, 20);
-          const volRatio = avgVol > 0 ? q.regularMarketVolume / avgVol : 1;
-          const gap      = q.regularMarketPreviousClose > 0 ? ((q.regularMarketOpen - q.regularMarketPreviousClose) / q.regularMarketPreviousClose) * 100 : 0;
+          if (h.closes.length < 15) continue; // need ≥15 bars for reliable RSI(14)
 
-          // Score: momentum (30) + volume confirmation (30) + RSI zone 40-70 (25) + gap (15)
-          const momentumScore = Math.min(Math.max(q.regularMarketChangePercent, 0) / 6, 1) * 30;
-          const volumeScore   = Math.min(Math.max(volRatio - 1, 0) / 4, 1) * 30;
-          const rsiScore      = rsi >= 40 && rsi <= 70 ? 25 : rsi > 70 ? Math.max(25 - (rsi - 70) * 1.5, 0) : Math.max(25 - (40 - rsi), 0);
-          const gapScore      = Math.min(Math.abs(gap) / 5, 1) * 15;
-          candidates.push({ q, rsi, atr, volRatio, gap, score: momentumScore + volumeScore + rsiScore + gapScore });
+          const rsi    = calcRSI(h.closes);
+          // 7-day ATR captures recent volatility better than 14-day for day trading stops
+          const atr7   = h.highs.length >= 8
+            ? calcATR(h.highs.slice(-8), h.lows.slice(-8), h.closes.slice(-8), 7)
+            : calcATR(h.highs, h.lows, h.closes);
+          const avgVol = sma(h.volumes, 20);
+          const volRatio = avgVol > 0 ? q.regularMarketVolume / avgVol : 1;
+          // Gap = overnight move from previous close to today's open (direction matters)
+          const gap = q.regularMarketPreviousClose > 0
+            ? ((q.regularMarketOpen - q.regularMarketPreviousClose) / q.regularMarketPreviousClose) * 100 : 0;
+          // Short-term vs medium-term trend
+          const sma5  = sma(h.closes, 5);
+          const sma20 = sma(h.closes, 20);
+          const pct   = q.regularMarketChangePercent;
+
+          // ── Hard filters ─────────────────────────────────────────────────────
+          if (avgVol < 300000) continue;   // illiquid: wide spreads, harder to exit
+          if (rsi > 80)        continue;   // dangerously overbought — likely to reverse sharply
+          if (pct > 15)        continue;   // >15% in one day: likely news catalyst, unpredictable
+          if (pct < 0)         continue;   // only trade long setups (momentum direction matters)
+
+          // ── Scoring (max 100) ─────────────────────────────────────────────────
+
+          // Volume surge (25 pts): starts rewarding at 1.5×, maxes at 5×
+          // High volume = institutional interest confirming the move
+          const volumeScore = Math.min(Math.max(volRatio - 1.5, 0) / 3.5, 1) * 25;
+
+          // RSI zone (25 pts): ideal 50-65 = uptrending but not overbought
+          // RSI < 50 = no uptrend; RSI > 72 = likely exhausted
+          const rsiScore = rsi >= 50 && rsi <= 65 ? 25
+                         : rsi >= 45 && rsi < 50  ? 15
+                         : rsi > 65 && rsi <= 72  ? 15
+                         : rsi > 72               ? 6
+                         : rsi >= 38 && rsi < 45  ? 6
+                         : 0;
+
+          // Momentum quality (20 pts): ideal 1.5-6% — confirmed but not extended
+          // Extended moves (>8%) are often near exhaustion; dangerous to chase
+          const momentumScore = pct >= 1.5 && pct <= 6 ? 20
+                              : pct > 6  && pct <= 10   ? 13
+                              : pct > 10                 ? 5
+                              : pct >= 0.5 && pct < 1.5  ? 10
+                              : 0;
+
+          // Uptrend (15 pts): 5-day SMA above 20-day SMA = stock has been rising
+          // Never buy a falling knife — trade with the trend
+          const trendScore = sma5 >= sma20 * 1.005 ? 15   // confirmed uptrend
+                           : sma5 >= sma20 * 0.995  ? 8   // flat / borderline
+                           : 0;                            // downtrend — no bonus
+
+          // Gap up (15 pts): positive overnight gap = catalyst before open
+          // Only reward POSITIVE gaps (negative gaps mean sellers are in control)
+          const gapScore = gap > 0 ? Math.min(gap / 4, 1) * 15 : 0;
+
+          const score = volumeScore + rsiScore + momentumScore + trendScore + gapScore;
+          candidates.push({ q, rsi, atr: atr7, volRatio, gap, score });
         }
         candidates.sort((a, b) => b.score - a.score);
 
-        // Two-pass: prefer confirmed live movers; fall back to watchlist if market is closed/flat
-        const livePass = candidates.filter(c => c.q.regularMarketChangePercent >= 1.0 && c.volRatio >= 1.5);
-        const finalCandidates = livePass.length > 0 ? livePass : candidates.filter(c => c.score > 10);
+        // Two-pass: prefer confirmed live movers; fall back to watchlist if market is closed
+        const livePass = candidates.filter(c => c.q.regularMarketChangePercent >= 1.0 && c.volRatio >= 1.5 && c.score >= 25);
+        const finalCandidates = livePass.length > 0 ? livePass : candidates.filter(c => c.score > 8);
         const mode = livePass.length > 0 ? 'live' : 'watchlist';
 
         if (!finalCandidates.length) {
@@ -812,10 +859,19 @@ export default {
         }
 
         const best = finalCandidates[0], bq = best.q;
-        const atr    = best.atr > 0 ? best.atr : bq.regularMarketPrice * 0.02;
-        const entry  = parseFloat(bq.regularMarketPrice.toFixed(2));
-        const stop   = parseFloat(Math.max(bq.regularMarketDayLow, entry - atr).toFixed(2));
-        const target = parseFloat((entry + (entry - stop) * 2.5).toFixed(2));
+        const atr = best.atr > 0 ? best.atr : bq.regularMarketPrice * 0.015;
+        const entry = parseFloat(bq.regularMarketPrice.toFixed(2));
+
+        // Stop placement: use day's low (natural support) if it's within 2% of entry
+        // If day's low is far away (stock already moved a lot), use 0.5×ATR instead
+        // Cap at 2% max to keep position sizing viable for small accounts
+        const dayLowDist = entry - bq.regularMarketDayLow;
+        const rawStop = dayLowDist > 0 && dayLowDist <= entry * 0.02
+          ? dayLowDist              // day's low is clean nearby support
+          : Math.min(atr * 0.5, entry * 0.02); // ATR-based, max 2%
+        const stopDistance = Math.min(Math.max(rawStop, entry * 0.005), entry * 0.02); // 0.5–2% range
+        const stop   = parseFloat((entry - stopDistance).toFixed(2));
+        const target = parseFloat((entry + stopDistance * 2.0).toFixed(2)); // strict 2:1 R:R
 
         const ai_setup = env.ANTHROPIC_API_KEY ? await callClaude(
           `Day trading setup: ${bq.symbol} (${bq.shortName ?? bq.symbol}).` +

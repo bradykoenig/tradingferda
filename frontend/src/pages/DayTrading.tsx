@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   createChart, CrosshairMode, LineStyle,
-  IChartApi, ISeriesApi, CandlestickData, HistogramData, UTCTimestamp,
-  CandlestickSeries, HistogramSeries,
+  IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, UTCTimestamp,
+  CandlestickSeries, HistogramSeries, LineSeries,
 } from 'lightweight-charts';
 import { Zap, RefreshCw, AlertCircle, TrendingUp, TrendingDown, Activity, Clock, BarChart2, Shield } from 'lucide-react';
 import { generateDTPick, fetchCandles, DTTopPick, DTCandidate, Candle } from '../lib/api';
@@ -84,6 +84,24 @@ function VolBar({ ratio }: { ratio: number }) {
   );
 }
 
+// ─── VWAP ─────────────────────────────────────────────────────────────────────
+
+// Volume Weighted Average Price — resets each trading day (day boundary = midnight UTC)
+// This is THE #1 indicator professional day traders use to define intraday fair value.
+// Price above VWAP = bullish bias. Price below VWAP = bearish bias.
+function calcVWAP(candles: Candle[], intervalKey: string): LineData[] | null {
+  if (intervalKey === '1d') return null; // not meaningful for daily bars
+  let cumTPV = 0, cumVol = 0, lastDay = -1;
+  return candles.map(c => {
+    const day = Math.floor(c.time / 86400);
+    if (day !== lastDay) { cumTPV = 0; cumVol = 0; lastDay = day; }
+    const tp = (c.high + c.low + c.close) / 3;
+    cumTPV += tp * c.volume;
+    cumVol += c.volume;
+    return { time: c.time as UTCTimestamp, value: cumVol > 0 ? cumTPV / cumVol : c.close };
+  });
+}
+
 // ─── Trading Chart ────────────────────────────────────────────────────────────
 
 interface ChartProps {
@@ -100,6 +118,7 @@ function TradingChart({ candles, entry, stop, target, interval, onIntervalChange
   const chartRef     = useRef<IChartApi | null>(null);
   const candleRef    = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volRef       = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const vwapRef      = useRef<ISeriesApi<'Line'> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -127,9 +146,19 @@ function TradingChart({ candles, entry, stop, target, interval, onIntervalChange
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
     volRef.current = vSeries;
 
+    // VWAP line — amber/gold, always visible, no extra price line
+    const wapSeries = chart.addSeries(LineSeries, {
+      color: '#f59e0b',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: false,
+    });
+    vwapRef.current = wapSeries;
+
     const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }));
     ro.observe(el);
-    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; vwapRef.current = null; };
   }, []);
 
   useEffect(() => {
@@ -138,8 +167,17 @@ function TradingChart({ candles, entry, stop, target, interval, onIntervalChange
     const vd: HistogramData[]   = candles.map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#16a34a40' : '#dc262640' }));
     candleRef.current.setData(cd);
     volRef.current.setData(vd);
+
+    // Update VWAP — only for intraday intervals
+    const vwapData = calcVWAP(candles, interval);
+    if (vwapData && vwapRef.current) {
+      vwapRef.current.setData(vwapData as LineData[]);
+    } else if (!vwapData && vwapRef.current) {
+      vwapRef.current.setData([]);
+    }
+
     chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+  }, [candles, interval]);
 
   useEffect(() => {
     if (!candleRef.current) return;
@@ -165,6 +203,7 @@ function TradingChart({ candles, entry, stop, target, interval, onIntervalChange
           <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t border-dashed border-blue-500/70" />Entry</span>
           <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t border-dashed border-red-500/70" />Stop</span>
           <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t border-dashed border-emerald-500/70" />Target</span>
+          {interval !== '1d' && <span className="flex items-center gap-1.5"><span className="inline-block w-5 border-t border-amber-400/70" />VWAP</span>}
         </div>
       </div>
       <div ref={containerRef} className="rounded-xl overflow-hidden border border-zinc-800/60" />
