@@ -4,7 +4,10 @@
       "Bash(npm install *)",
       "Bash(npm run *)",
       "Bash(npx tsc *)",
-      "Bash(npx wrangler *)"
+      "Bash(npx wrangler *)",
+      "Bash(Get-ChildItem -Recurse \"c:\\\\Users\\\\bkoen\\\\OneDrive\\\\Documents\\\\GitHub\\\\tradingferda\\\\frontend\\\\src\" -Filter \"*.tsx\")",
+      "Bash(Select-Object FullName)",
+      "PowerShell($content = Get-Content \"c:\\\\Users\\\\bkoen\\\\OneDrive\\\\Documents\\\\GitHub\\\\tradingferda\\\\frontend\\\\node_modules\\\\lightweight-charts\\\\dist\\\\typings.d.ts\"; $start = \\($content | Select-String \"^export \\\\{\" | Select-Object -First 1\\).LineNumber; $content[\\($start-1\\)..\\($start+20\\)])"
     ]
   }
 }
