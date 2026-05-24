@@ -2,7 +2,6 @@ export interface Env {
   PASSWORD_HASH: string;
   JWT_SECRET: string;
   ODDS_API_KEY: string;
-  FINNHUB_API_KEY: string;
   ANTHROPIC_API_KEY: string;
 }
 
@@ -632,44 +631,43 @@ export default {
     if (url.pathname === '/api/stock/metrics' && request.method === 'GET') {
       const authErr = await requireAuth(request, env, cors);
       if (authErr) return authErr;
-      if (!env.FINNHUB_API_KEY) return json({ error: 'Stock API not configured' }, 503, cors);
       const symbol = (url.searchParams.get('symbol') ?? '').toUpperCase();
       if (!symbol) return json({ error: 'symbol required' }, 400, cors);
       try {
-        const [metrics, quote, profile] = await Promise.all([
-          fh<FinnhubMetrics>(`/stock/metric?symbol=${symbol}&metric=all`, env.FINNHUB_API_KEY),
-          fh<FinnhubQuote>(`/quote?symbol=${symbol}`, env.FINNHUB_API_KEY),
-          fh<FinnhubProfile>(`/stock/profile2?symbol=${symbol}`, env.FINNHUB_API_KEY),
+        const cache = caches.default;
+        const [quoteRes, summary] = await Promise.all([
+          yfFetch<{ quoteResponse?: { result?: YFQuote[] } }>(
+            `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`
+          ),
+          yfSummary(symbol, cache),
         ]);
-        if (!profile.name) return json({ error: 'Ticker not found' }, 404, cors);
-        const scoring = scoreLT(metrics.metric);
+        const q = quoteRes?.quoteResponse?.result?.[0];
+        if (!q) return json({ error: 'Ticker not found' }, 404, cors);
+        const fin = summary.financialData ?? {};
+        const ks = summary.defaultKeyStatistics ?? {};
+        const sd = summary.summaryDetail ?? {};
+        const metrics: Record<string, number | null> = {
+          revenueGrowth: fin.revenueGrowth?.raw ?? null,
+          earningsGrowth: fin.earningsGrowth?.raw ?? null,
+          profitMargins: fin.profitMargins?.raw ?? null,
+          returnOnEquity: fin.returnOnEquity?.raw ?? null,
+          debtToEquity: fin.debtToEquity?.raw ?? null,
+          freeCashflow: fin.freeCashflow?.raw ?? null,
+          forwardPE: ks.forwardPE?.raw ?? null,
+          priceToBook: ks.priceToBook?.raw ?? null,
+          beta: sd.beta?.raw ?? null,
+        };
+        const scoring = scoreLT(q, summary);
         return new Response(JSON.stringify({
-          ticker: symbol, metrics: metrics.metric, quote, profile,
+          ticker: symbol,
+          metrics,
+          quote: { c: q.regularMarketPrice, d: q.regularMarketChange, dp: q.regularMarketChangePercent, h: q.regularMarketDayHigh, l: q.regularMarketDayLow, o: q.regularMarketOpen, pc: q.regularMarketPreviousClose },
+          profile: { name: q.longName ?? q.shortName ?? symbol, finnhubIndustry: q.industry ?? q.sector ?? 'Unknown', marketCapitalization: (q.marketCap ?? 0) / 1e6, ticker: symbol },
           scoring, rating: ratingFromScore(scoring.overall),
         }), { headers: { ...cors, 'Content-Type': 'application/json' } });
       } catch {
         return json({ error: 'Failed to fetch stock data' }, 502, cors);
       }
-    }
-
-    // ── Stock: batch quotes (day trading watchlist) ────────────────────────────
-
-    if (url.pathname === '/api/stock/quotes' && request.method === 'GET') {
-      const authErr = await requireAuth(request, env, cors);
-      if (authErr) return authErr;
-      if (!env.FINNHUB_API_KEY) return json({ error: 'Stock API not configured' }, 503, cors);
-      const symbols = (url.searchParams.get('symbols') ?? '').split(',').filter(Boolean).slice(0, 25);
-      if (!symbols.length) return json({ error: 'symbols required' }, 400, cors);
-      const quotes = await Promise.all(
-        symbols.map(s =>
-          fh<FinnhubQuote>(`/quote?symbol=${s}`, env.FINNHUB_API_KEY)
-            .then(q => ({ symbol: s, ...q }))
-            .catch(() => null)
-        )
-      );
-      return new Response(JSON.stringify(quotes.filter(Boolean)), {
-        headers: { ...cors, 'Content-Type': 'application/json' },
-      });
     }
 
     // ── Stock: AI-generated pick ──────────────────────────────────────────────
