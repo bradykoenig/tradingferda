@@ -80,45 +80,145 @@ async function verifyJWT(token: string, secret: string): Promise<Record<string, 
 
 // ─── Stock helpers ─────────────────────────────────────────────────────────────
 
-const LT_UNIVERSE = ['MSFT','AAPL','GOOGL','META','AMZN','NVDA','JPM','V','MA','UNH','JNJ','PG','KO','COST','AVGO','HD','WMT','LLY','ABBV','BRK.B'];
-const DT_UNIVERSE = ['NVDA','AMD','TSLA','COIN','MSTR','PLTR','SOFI','SMCI','NFLX','SHOP','RIVN','UPST','AFRM','GME','HOOD','SQ','PYPL','SOXL','TQQQ','RBLX'];
+// ─── Yahoo Finance helpers ────────────────────────────────────────────────────
 
-interface FinnhubQuote { c: number; d: number; dp: number; h: number; l: number; o: number; pc: number }
-interface FinnhubProfile { name: string; finnhubIndustry: string; marketCapitalization: number; ticker: string }
-interface FinnhubMetrics { metric: Record<string, number | null> }
+interface YFQuote {
+  symbol: string; shortName?: string; longName?: string;
+  regularMarketPrice: number; regularMarketChange: number; regularMarketChangePercent: number;
+  regularMarketVolume: number; regularMarketOpen: number; regularMarketDayLow: number;
+  regularMarketDayHigh: number; regularMarketPreviousClose: number;
+  averageDailyVolume3Month?: number; marketCap?: number; sector?: string; industry?: string;
+}
+interface YFKeyStats {
+  beta?: { raw: number }; forwardPE?: { raw: number }; priceToBook?: { raw: number };
+  earningsQuarterlyGrowth?: { raw: number }; enterpriseToEbitda?: { raw: number };
+  enterpriseToRevenue?: { raw: number };
+}
+interface YFFinancialData {
+  revenueGrowth?: { raw: number }; earningsGrowth?: { raw: number };
+  grossMargins?: { raw: number }; profitMargins?: { raw: number };
+  returnOnEquity?: { raw: number }; debtToEquity?: { raw: number };
+  freeCashflow?: { raw: number }; totalRevenue?: { raw: number };
+  operatingCashflow?: { raw: number };
+}
+interface YFSummaryDetail { trailingPE?: { raw: number }; beta?: { raw: number }; marketCap?: { raw: number } }
+type YFSummary = { defaultKeyStatistics?: YFKeyStats; financialData?: YFFinancialData; summaryDetail?: YFSummaryDetail };
+interface YFHistory { closes: number[]; highs: number[]; lows: number[]; opens: number[]; volumes: number[] }
 
-async function fh<T>(path: string, key: string): Promise<T> {
-  const res = await fetch(`https://finnhub.io/api/v1${path}&token=${key}`);
-  return res.json() as Promise<T>;
+async function yfFetch<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Schlima/1.0)', 'Accept': 'application/json' } });
+    if (!res.ok) return null;
+    return res.json() as Promise<T>;
+  } catch { return null; }
 }
 
-function scorePct(v: number | null | undefined, bad: number, good: number): number {
+async function yfScreener(scrId: string, count: number, cache: Cache, ttl = 900): Promise<YFQuote[]> {
+  const key = new Request(`https://cache.schlima/yf/screen/${scrId}/${count}`);
+  const hit = await cache.match(key).catch(() => null);
+  if (hit) return hit.json().catch(() => []) as Promise<YFQuote[]>;
+  const data = await yfFetch<{ finance?: { result?: Array<{ quotes?: YFQuote[] }> } }>(
+    `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?formatted=false&lang=en-US&region=US&scrIds=${scrId}&count=${count}`
+  );
+  const quotes = data?.finance?.result?.[0]?.quotes ?? [];
+  await cache.put(key, new Response(JSON.stringify(quotes), { headers: { 'Cache-Control': `public, max-age=${ttl}`, 'Content-Type': 'application/json' } })).catch(() => {});
+  return quotes;
+}
+
+async function yfSummary(symbol: string, cache: Cache): Promise<YFSummary> {
+  const key = new Request(`https://cache.schlima/yf/summary/${symbol}`);
+  const hit = await cache.match(key).catch(() => null);
+  if (hit) return hit.json().catch(() => ({})) as Promise<YFSummary>;
+  const data = await yfFetch<{ quoteSummary?: { result?: YFSummary[] } }>(
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=defaultKeyStatistics,financialData,summaryDetail`
+  );
+  const s = data?.quoteSummary?.result?.[0] ?? {};
+  await cache.put(key, new Response(JSON.stringify(s), { headers: { 'Cache-Control': 'public, max-age=21600', 'Content-Type': 'application/json' } })).catch(() => {});
+  return s;
+}
+
+async function yfHistory(symbol: string, range: string, cache: Cache, ttl = 900): Promise<YFHistory> {
+  const key = new Request(`https://cache.schlima/yf/hist/${symbol}/${range}`);
+  const hit = await cache.match(key).catch(() => null);
+  const empty: YFHistory = { closes: [], highs: [], lows: [], opens: [], volumes: [] };
+  if (hit) return hit.json().catch(() => empty) as Promise<YFHistory>;
+  const data = await yfFetch<Record<string, unknown>>(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=${range}`);
+  const result = (data?.chart as Record<string, unknown> | undefined);
+  const rows = (result?.result as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
+  const quote = ((rows?.indicators as Record<string, unknown> | undefined)?.quote as unknown[] | undefined)?.[0] as Record<string, unknown[]> | undefined;
+  const clean = (arr: unknown[] | undefined): number[] => (arr ?? []).filter((v): v is number => typeof v === 'number');
+  const out: YFHistory = {
+    closes:  clean(quote?.close),
+    highs:   clean(quote?.high),
+    lows:    clean(quote?.low),
+    opens:   clean(quote?.open),
+    volumes: clean(quote?.volume),
+  };
+  await cache.put(key, new Response(JSON.stringify(out), { headers: { 'Cache-Control': `public, max-age=${ttl}`, 'Content-Type': 'application/json' } })).catch(() => {});
+  return out;
+}
+
+// ─── Technical indicators ─────────────────────────────────────────────────────
+
+function calcRSI(closes: number[], period = 14): number {
+  if (closes.length < period + 1) return 50;
+  const changes = closes.slice(1).map((c, i) => c - closes[i]);
+  const gains = changes.map(c => Math.max(c, 0));
+  const losses = changes.map(c => Math.max(-c, 0));
+  let ag = gains.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  let al = losses.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < gains.length; i++) {
+    ag = (ag * (period - 1) + gains[i]) / period;
+    al = (al * (period - 1) + losses[i]) / period;
+  }
+  if (al === 0) return 100;
+  return Math.round(100 - 100 / (1 + ag / al));
+}
+
+function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number {
+  if (highs.length < 2) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < highs.length; i++)
+    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])));
+  const slice = trs.slice(-period);
+  return slice.reduce((s, v) => s + v, 0) / slice.length;
+}
+
+function sma(arr: number[], n: number): number {
+  const s = arr.slice(-n);
+  return s.length ? s.reduce((a, v) => a + v, 0) / s.length : 0;
+}
+
+// ─── Scoring ──────────────────────────────────────────────────────────────────
+
+function sp(v: number | null | undefined, bad: number, good: number): number {
   if (v == null || !isFinite(v)) return 45;
   return Math.round(Math.min(Math.max((v - bad) / (good - bad), 0), 1) * 100);
 }
 
-function scoreLT(m: Record<string, number | null>): { overall: number; dims: Record<string, number> } {
+function scoreLT(q: YFQuote, s: YFSummary): { overall: number; dims: Record<string, number> } {
+  const fin = s.financialData ?? {}, stats = s.defaultKeyStatistics ?? {}, det = s.summaryDetail ?? {};
+  const fcfYield = fin.freeCashflow?.raw && det.marketCap?.raw ? fin.freeCashflow.raw / det.marketCap.raw : null;
   const dims: Record<string, number> = {
-    'Revenue Growth':   scorePct(m['revenueGrowth3Y'] ?? m['revenueGrowthTTMYoy'], 0, 20),
-    'Earnings Growth':  scorePct(m['epsGrowthTTMYoy'] ?? m['epsGrowth3Y'], 0, 25),
-    'Net Margin':       scorePct(m['netMarginTTM'] ?? m['netMarginAnnual'], 0, 30),
-    'Valuation':        scorePct(m['peExclExtraTTM'] ?? m['peBasicExclExtraTTM'], 55, 12),
-    'Free Cash Flow':   scorePct(m['pfcfShareTTM'], 60, 12),
-    'Debt Level':       scorePct(m['totalDebt/totalEquityAnnual'], 4, 0),
-    'Return on Equity': scorePct(m['roeTTM'] ?? m['roe5Y'], 5, 35),
-    'Risk (Beta)':      scorePct(m['beta'], 2.0, 0.5),
+    'Revenue Growth':   sp(fin.revenueGrowth?.raw,                               -0.05, 0.25),
+    'Earnings Growth':  sp(fin.earningsGrowth?.raw ?? stats.earningsQuarterlyGrowth?.raw, -0.10, 0.35),
+    'Profit Margin':    sp(fin.profitMargins?.raw,                                0,    0.30),
+    'Return on Equity': sp(fin.returnOnEquity?.raw,                               0.05, 0.40),
+    'Valuation (P/E)':  sp(stats.forwardPE?.raw ?? det.trailingPE?.raw,          45,   10),
+    'Debt (D/E)':       sp(fin.debtToEquity?.raw != null ? fin.debtToEquity.raw / 100 : null, 2.0, 0),
+    'EV/EBITDA':        sp(stats.enterpriseToEbitda?.raw,                         30,   8),
+    'FCF Yield':        sp(fcfYield,                                              0,    0.06),
   };
-  const weights = [0.15, 0.15, 0.15, 0.15, 0.15, 0.10, 0.10, 0.05];
-  const overall = Math.round(Object.values(dims).reduce((s, v, i) => s + v * weights[i], 0));
-  return { overall, dims };
+  const weights = [0.20, 0.18, 0.15, 0.14, 0.12, 0.08, 0.08, 0.05];
+  return { overall: Math.round(Object.values(dims).reduce((s, v, i) => s + v * weights[i], 0)), dims };
 }
 
 function ratingFromScore(score: number): string {
-  if (score >= 80) return 'STRONG BUY';
-  if (score >= 70) return 'WATCHLIST';
-  if (score >= 60) return 'HOLD';
-  if (score >= 50) return 'OVERVALUED';
-  if (score >= 40) return 'RISKY';
+  if (score >= 78) return 'STRONG BUY';
+  if (score >= 65) return 'WATCHLIST';
+  if (score >= 52) return 'HOLD';
+  if (score >= 42) return 'OVERVALUED';
+  if (score >= 32) return 'RISKY';
   return 'PASS';
 }
 
@@ -577,100 +677,205 @@ export default {
     if (url.pathname === '/api/stock/generate-pick' && request.method === 'GET') {
       const authErr = await requireAuth(request, env, cors);
       if (authErr) return authErr;
-      if (!env.FINNHUB_API_KEY) return json({ error: 'Stock API not configured' }, 503, cors);
-      try {
-
       const type = url.searchParams.get('type');
+      const cache = caches.default;
+
+      try {
 
       // ── Long-term pick ──────────────────────────────────────────────────────
       if (type === 'longterm') {
-        const results = await Promise.all(
-          LT_UNIVERSE.map(async (symbol) => {
-            try {
-              const [metrics, quote, profile] = await Promise.all([
-                fh<FinnhubMetrics>(`/stock/metric?symbol=${symbol}&metric=all`, env.FINNHUB_API_KEY),
-                fh<FinnhubQuote>(`/quote?symbol=${symbol}`, env.FINNHUB_API_KEY),
-                fh<FinnhubProfile>(`/stock/profile2?symbol=${symbol}`, env.FINNHUB_API_KEY),
-              ]);
-              const scoring = scoreLT(metrics.metric);
-              return { symbol, metrics: metrics.metric, quote, profile, scoring, rating: ratingFromScore(scoring.overall) };
-            } catch { return null; }
-          })
-        );
+        const ltKey = new Request('https://cache.schlima/picks/longterm');
+        const ltHit = await cache.match(ltKey);
+        if (ltHit) return new Response(await ltHit.text(), { headers: { ...cors, 'Content-Type': 'application/json' } });
 
-        const stocks = results
-          .filter((r): r is NonNullable<typeof r> => r !== null && r.profile.name !== undefined)
-          .sort((a, b) => b.scoring.overall - a.scoring.overall);
-
-        const top = stocks[0];
-        if (!top) return json({ error: 'No data available' }, 503, cors);
-
-        let ai_thesis = '';
-        if (env.ANTHROPIC_API_KEY) {
-          const m = top.metrics;
-          ai_thesis = await callClaude(
-            `Analyze ${top.symbol} (${top.profile.name}, ${top.profile.finnhubIndustry}) for a disciplined long-term investor. ` +
-            `Metrics — PE: ${m['peExclExtraTTM']?.toFixed(1)}, RevenueGrowth3Y: ${m['revenueGrowth3Y']?.toFixed(1)}%, ` +
-            `EPSGrowthTTM: ${m['epsGrowthTTMYoy']?.toFixed(1)}%, NetMargin: ${m['netMarginTTM']?.toFixed(1)}%, ` +
-            `D/E: ${m['totalDebt/totalEquityAnnual']?.toFixed(2)}, ROE: ${m['roeTTM']?.toFixed(1)}%, ` +
-            `Beta: ${m['beta']?.toFixed(2)}, Price: $${top.quote.c?.toFixed(2)}, Score: ${top.scoring.overall}/100. ` +
-            `Write exactly 2 sentences. First: the strongest reason to own this stock long-term. Second: the primary risk or reason to wait. Be specific to the numbers. No intro phrases like "Based on" or "This stock".`,
-            env.ANTHROPIC_API_KEY
-          );
+        // Dynamic universe from multiple screeners — no fixed list
+        const [growth, value, anchors] = await Promise.all([
+          yfScreener('growth_technology_stocks', 35, cache, 3600),
+          yfScreener('undervalued_growth_stocks', 35, cache, 3600),
+          yfScreener('portfolio_anchors', 25, cache, 3600),
+        ]);
+        const seen = new Set<string>();
+        const universe: YFQuote[] = [];
+        for (const q of [...growth, ...value, ...anchors]) {
+          if (!seen.has(q.symbol) && q.regularMarketPrice >= 5 && (q.marketCap ?? 0) > 500e6) {
+            seen.add(q.symbol); universe.push(q);
+          }
         }
 
-        return new Response(JSON.stringify({ top, topThree: stocks.slice(0, 3), ai_thesis }), {
-          headers: { ...cors, 'Content-Type': 'application/json' },
+        // Fetch fundamentals in parallel (batched to stay within YF limits)
+        type Scored = { q: YFQuote; s: YFSummary; scoring: ReturnType<typeof scoreLT>; rating: string };
+        const scored: Scored[] = [];
+        const batch = 15;
+        for (let i = 0; i < Math.min(universe.length, 75); i += batch) {
+          const chunk = universe.slice(i, i + batch);
+          const summaries = await Promise.all(chunk.map(q => yfSummary(q.symbol, cache)));
+          for (let j = 0; j < chunk.length; j++) {
+            const s = summaries[j];
+            if (!s.financialData && !s.defaultKeyStatistics) continue;
+            const scoring = scoreLT(chunk[j], s);
+            scored.push({ q: chunk[j], s, scoring, rating: ratingFromScore(scoring.overall) });
+          }
+        }
+        scored.sort((a, b) => b.scoring.overall - a.scoring.overall);
+
+        const top3 = scored.slice(0, 3);
+        if (!top3.length) return json({ error: 'No data available' }, 503, cors);
+        const best = top3[0];
+
+        const toStockData = ({ q, s, scoring, rating }: Scored) => ({
+          ticker: q.symbol,
+          metrics: {
+            revenueGrowth:   s.financialData?.revenueGrowth?.raw ?? null,
+            earningsGrowth:  s.financialData?.earningsGrowth?.raw ?? null,
+            profitMargins:   s.financialData?.profitMargins?.raw ?? null,
+            returnOnEquity:  s.financialData?.returnOnEquity?.raw ?? null,
+            forwardPE:       s.defaultKeyStatistics?.forwardPE?.raw ?? null,
+            debtToEquity:    s.financialData?.debtToEquity?.raw ?? null,
+            enterpriseToEbitda: s.defaultKeyStatistics?.enterpriseToEbitda?.raw ?? null,
+            beta:            s.defaultKeyStatistics?.beta?.raw ?? s.summaryDetail?.beta?.raw ?? null,
+          },
+          quote: { c: q.regularMarketPrice, d: q.regularMarketChange, dp: q.regularMarketChangePercent, h: q.regularMarketDayHigh, l: q.regularMarketDayLow, o: q.regularMarketOpen, pc: q.regularMarketPreviousClose },
+          profile: { name: q.shortName ?? q.longName ?? q.symbol, finnhubIndustry: q.sector ?? q.industry ?? 'Unknown', marketCapitalization: (q.marketCap ?? s.summaryDetail?.marketCap?.raw ?? 0) / 1e6, ticker: q.symbol },
+          scoring,
+          rating,
         });
+
+        const fin = best.s.financialData ?? {}, stats = best.s.defaultKeyStatistics ?? {};
+        const ai_thesis = env.ANTHROPIC_API_KEY ? await callClaude(
+          `Fundamental analysis for long-term investor. Stock: ${best.q.symbol} (${best.q.shortName ?? best.q.symbol}, ${best.q.sector ?? 'Unknown sector'}).` +
+          ` Revenue growth ${((fin.revenueGrowth?.raw ?? 0)*100).toFixed(1)}%, earnings growth ${((fin.earningsGrowth?.raw ?? 0)*100).toFixed(1)}%,` +
+          ` net margin ${((fin.profitMargins?.raw ?? 0)*100).toFixed(1)}%, ROE ${((fin.returnOnEquity?.raw ?? 0)*100).toFixed(1)}%,` +
+          ` forward P/E ${stats.forwardPE?.raw?.toFixed(1) ?? 'N/A'}, EV/EBITDA ${stats.enterpriseToEbitda?.raw?.toFixed(1) ?? 'N/A'}, score ${best.scoring.overall}/100.` +
+          ` Write exactly 2 sentences. First: the strongest reason to own long-term. Second: the primary risk. No intro phrases.`,
+          env.ANTHROPIC_API_KEY
+        ) : '';
+
+        const body = JSON.stringify({ top: toStockData(best), topThree: top3.map(toStockData), ai_thesis });
+        await cache.put(ltKey, new Response(body, { headers: { 'Cache-Control': 'public, max-age=10800', 'Content-Type': 'application/json' } })).catch(() => {});
+        return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
       // ── Day trading pick ────────────────────────────────────────────────────
       if (type === 'daytrading') {
-        const quotes = await Promise.all(
-          DT_UNIVERSE.map(async (symbol) => {
-            const q = await fh<FinnhubQuote>(`/quote?symbol=${symbol}`, env.FINNHUB_API_KEY).catch(() => null);
-            return q ? { symbol, ...q } : null;
-          })
-        );
+        const dtKey = new Request('https://cache.schlima/picks/daytrading');
+        const dtHit = await cache.match(dtKey);
+        if (dtHit) return new Response(await dtHit.text(), { headers: { ...cors, 'Content-Type': 'application/json' } });
 
-        const active = quotes
-          .filter((q): q is NonNullable<typeof q> => q !== null && Math.abs(q.dp) > 1.5 && q.c > 3 && q.l > 0)
-          .sort((a, b) => Math.abs(b.dp) - Math.abs(a.dp));
-
-        if (!active.length) {
-          return new Response(JSON.stringify({ top: null, candidates: [], ai_setup: '', message: 'No active setups right now. Markets may be closed or low-volatility.' }), {
-            headers: { ...cors, 'Content-Type': 'application/json' },
-          });
+        // Dynamic universe: top movers + high-volume actives from market today
+        const [actives, gainers] = await Promise.all([
+          yfScreener('most_actives', 50, cache, 600),
+          yfScreener('day_gainers',  30, cache, 600),
+        ]);
+        const seen2 = new Set<string>();
+        const dtUniverse: YFQuote[] = [];
+        for (const q of [...actives, ...gainers]) {
+          if (!seen2.has(q.symbol) && q.regularMarketPrice >= 3 && q.regularMarketPrice <= 500) {
+            seen2.add(q.symbol); dtUniverse.push(q);
+          }
         }
 
-        const top = active[0];
-        const entry  = parseFloat(top.c.toFixed(2));
-        const stop   = parseFloat(Math.max(top.l, entry * 0.98).toFixed(2));
-        const risk   = entry - stop;
-        const target = parseFloat((entry + risk * 2.5).toFixed(2));
+        // Fetch 1-month history for RSI + ATR + volume ratio
+        const hists = await Promise.all(dtUniverse.slice(0, 50).map(q => yfHistory(q.symbol, '1mo', cache, 600)));
 
-        let ai_setup = '';
-        if (env.ANTHROPIC_API_KEY) {
-          ai_setup = await callClaude(
-            `Intraday trading setup for ${top.symbol}: price $${top.c.toFixed(2)}, ${top.dp > 0 ? '+' : ''}${top.dp.toFixed(2)}% today. ` +
-            `Day range $${top.l.toFixed(2)}-$${top.h.toFixed(2)}, opened $${top.o.toFixed(2)}. ` +
-            `Setup: entry ~$${entry}, stop $${stop}, target $${target} (2.5:1 R:R). ` +
-            `Write exactly 2 sentences. First: what makes this setup worth taking right now. Second: what price action would invalidate it. No intro phrases. Be specific to the levels.`,
-            env.ANTHROPIC_API_KEY
-          );
+        interface DTCandidate { q: YFQuote; rsi: number; atr: number; volRatio: number; gap: number; score: number }
+        const candidates: DTCandidate[] = [];
+
+        for (let i = 0; i < dtUniverse.length && i < 50; i++) {
+          const q = dtUniverse[i], h = hists[i];
+          if (h.closes.length < 5) continue;
+          const rsi      = calcRSI(h.closes);
+          const atr      = calcATR(h.highs, h.lows, h.closes);
+          const avgVol   = sma(h.volumes, 20);
+          const volRatio = avgVol > 0 ? q.regularMarketVolume / avgVol : 1;
+          const gap      = q.regularMarketPreviousClose > 0 ? ((q.regularMarketOpen - q.regularMarketPreviousClose) / q.regularMarketPreviousClose) * 100 : 0;
+
+          // Must be moving up with confirmed volume — no short setups for simplicity
+          if (q.regularMarketChangePercent < 1.0 || volRatio < 1.5) continue;
+
+          // Score: momentum (30) + volume confirmation (30) + RSI zone 40-70 (25) + gap (15)
+          const momentumScore = Math.min(q.regularMarketChangePercent / 6, 1) * 30;
+          const volumeScore   = Math.min(Math.max(volRatio - 1, 0) / 4, 1) * 30;
+          const rsiScore      = rsi >= 40 && rsi <= 70 ? 25 : rsi > 70 ? Math.max(25 - (rsi - 70) * 1.5, 0) : Math.max(25 - (40 - rsi), 0);
+          const gapScore      = Math.min(Math.abs(gap) / 5, 1) * 15;
+          candidates.push({ q, rsi, atr, volRatio, gap, score: momentumScore + volumeScore + rsiScore + gapScore });
+        }
+        candidates.sort((a, b) => b.score - a.score);
+
+        if (!candidates.length) {
+          const msg = JSON.stringify({ top: null, candidates: [], ai_setup: '', message: 'No active setups right now. Markets may be closed or low-volatility.' });
+          return new Response(msg, { headers: { ...cors, 'Content-Type': 'application/json' } });
         }
 
-        return new Response(JSON.stringify({
-          top: { ...top, entry, stop, target },
-          candidates: active.slice(0, 6),
+        const best = candidates[0], bq = best.q;
+        const atr    = best.atr > 0 ? best.atr : bq.regularMarketPrice * 0.02;
+        const entry  = parseFloat(bq.regularMarketPrice.toFixed(2));
+        const stop   = parseFloat(Math.max(bq.regularMarketDayLow, entry - atr).toFixed(2));
+        const target = parseFloat((entry + (entry - stop) * 2.5).toFixed(2));
+
+        const ai_setup = env.ANTHROPIC_API_KEY ? await callClaude(
+          `Day trading setup: ${bq.symbol} (${bq.shortName ?? bq.symbol}).` +
+          ` Price $${entry}, change +${bq.regularMarketChangePercent.toFixed(2)}%, RSI ${best.rsi},` +
+          ` volume ${best.volRatio.toFixed(1)}x avg, gap ${best.gap.toFixed(1)}%, ATR $${atr.toFixed(2)}.` +
+          ` Entry $${entry}, stop $${stop}, target $${target} (${((target-entry)/(entry-stop)).toFixed(1)}:1 R/R).` +
+          ` Write exactly 2 sentences. First: why this setup is strong today. Second: what invalidates the trade. No intro phrases.`,
+          env.ANTHROPIC_API_KEY
+        ) : '';
+
+        const toQuote = ({ q }: DTCandidate) => ({ symbol: q.symbol, c: q.regularMarketPrice, d: q.regularMarketChange, dp: q.regularMarketChangePercent, h: q.regularMarketDayHigh, l: q.regularMarketDayLow, o: q.regularMarketOpen, pc: q.regularMarketPreviousClose });
+        const body = JSON.stringify({
+          top: { ...toQuote(best), entry, stop, target, rsi: best.rsi, atr: parseFloat(atr.toFixed(2)), volRatio: parseFloat(best.volRatio.toFixed(2)), score: Math.round(best.score), gap: parseFloat(best.gap.toFixed(2)) },
+          candidates: candidates.slice(0, 8).map(c => ({ ...toQuote(c), rsi: c.rsi, volRatio: parseFloat(c.volRatio.toFixed(2)), score: Math.round(c.score) })),
           ai_setup,
-        }), { headers: { ...cors, 'Content-Type': 'application/json' } });
+        });
+        await cache.put(dtKey, new Response(body, { headers: { 'Cache-Control': 'public, max-age=900', 'Content-Type': 'application/json' } })).catch(() => {});
+        return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
       return json({ error: 'type must be longterm or daytrading' }, 400, cors);
       } catch {
         return json({ error: 'Failed to generate pick' }, 502, cors);
       }
+    }
+
+    // ── Stock: Candlestick data ───────────────────────────────────────────────
+
+    if (url.pathname === '/api/stock/candles' && request.method === 'GET') {
+      const authErr = await requireAuth(request, env, cors);
+      if (authErr) return authErr;
+      const symbol = (url.searchParams.get('symbol') ?? 'SPY').toUpperCase();
+      const interval = url.searchParams.get('interval') ?? '5m';
+      const intervalCfg: Record<string, { range: string; ttl: number }> = {
+        '1m':  { range: '1d',  ttl: 60   },
+        '5m':  { range: '1d',  ttl: 300  },
+        '15m': { range: '5d',  ttl: 600  },
+        '1h':  { range: '1mo', ttl: 1800 },
+        '1d':  { range: '3mo', ttl: 3600 },
+      };
+      const cfg = intervalCfg[interval] ?? intervalCfg['5m'];
+      const candleCache = caches.default;
+      const ck = new Request(`https://cache.schlima/candles/${symbol}/${interval}`);
+      const ch = await candleCache.match(ck);
+      if (ch) return new Response(await ch.text(), { headers: { ...cors, 'Content-Type': 'application/json' } });
+
+      const data = await yfFetch<Record<string, unknown>>(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${cfg.range}`
+      );
+      const rows = ((data?.chart as Record<string, unknown> | undefined)?.result as unknown[] | undefined)?.[0] as Record<string, unknown> | undefined;
+      if (!rows) return json({ error: 'No data' }, 502, cors);
+      const timestamps = (rows.timestamp as number[] | undefined) ?? [];
+      const quote = (((rows.indicators as Record<string, unknown> | undefined)?.quote as unknown[] | undefined)?.[0]) as Record<string, (number | null)[]> | undefined;
+      if (!quote || !timestamps.length) return json({ error: 'No data' }, 502, cors);
+      const candles = timestamps.map((t, i) => ({
+        time: t,
+        open:   quote.open?.[i]   ?? 0,
+        high:   quote.high?.[i]   ?? 0,
+        low:    quote.low?.[i]    ?? 0,
+        close:  quote.close?.[i]  ?? 0,
+        volume: quote.volume?.[i] ?? 0,
+      })).filter(c => c.open > 0 && c.close > 0);
+      const cbody = JSON.stringify(candles);
+      await candleCache.put(ck, new Response(cbody, { headers: { 'Cache-Control': `public, max-age=${cfg.ttl}`, 'Content-Type': 'application/json' } })).catch(() => {});
+      return new Response(cbody, { headers: { ...cors, 'Content-Type': 'application/json' } });
     }
 
     return new Response('Not found', { status: 404, headers: cors });

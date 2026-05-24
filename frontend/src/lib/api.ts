@@ -75,11 +75,21 @@ export interface GeneratedLTPick {
 
 export interface DTQuote { symbol: string; c: number; d: number; dp: number; h: number; l: number; o: number; pc: number }
 
+export interface DTTopPick extends DTQuote {
+  entry: number; stop: number; target: number;
+  rsi: number; atr: number; volRatio: number; score: number; gap: number;
+}
+export interface DTCandidate extends DTQuote {
+  rsi: number; volRatio: number; score: number;
+}
 export interface GeneratedDTPick {
-  top: (DTQuote & { entry: number; stop: number; target: number }) | null;
-  candidates: DTQuote[];
+  top: DTTopPick | null;
+  candidates: DTCandidate[];
   ai_setup: string;
   message?: string;
+}
+export interface Candle {
+  time: number; open: number; high: number; low: number; close: number; volume: number;
 }
 
 export async function fetchStockMetrics(token: string, symbol: string): Promise<StockData> {
@@ -179,4 +189,13 @@ export async function fetchOdds(token: string, sport: string): Promise<GameOdds[
     throw new Error(data.error ?? 'Failed to fetch odds');
   }
   return res.json() as Promise<GameOdds[]>;
+}
+
+export async function fetchCandles(token: string, symbol: string, interval: string): Promise<Candle[]> {
+  const res = await fetch(`${API_BASE}/stock/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  notifyIfUnauthorized(res);
+  if (!res.ok) throw new Error('Failed to fetch candles');
+  return res.json() as Promise<Candle[]>;
 }
